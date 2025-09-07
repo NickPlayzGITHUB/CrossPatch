@@ -11,7 +11,6 @@ CONFIG_FILE = "mod_manager_config.json"
 APP_TITLE   = "CrossPatch - A Crossworlds Mod Manager"
 APP_VERSION = "1.0.3"
 
-# ── Console Helpers ───────────────────────────────────────────────
 def show_console():
     try:
         if ctypes.windll.kernel32.AllocConsole():
@@ -26,7 +25,6 @@ def hide_console():
     except Exception:
         pass
 
-# ── Game Helpers ─────────────────────────────────────────────────
 def create_appid_file():
     try:
         os.makedirs(GAME_ROOT, exist_ok=True)
@@ -48,7 +46,6 @@ def launch_game():
         return
     subprocess.Popen([GAME_EXE], cwd=GAME_ROOT)
 
-# ── Config Loading/Saving ─────────────────────────────────────────
 def default_mods_folder():
     app_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
     path = os.path.join(app_dir, "Mods")
@@ -88,13 +85,11 @@ def save_config(cfg):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
-# ── Paths & Config ─────────────────────────────────────────────────
 cfg        = load_config()
 GAME_ROOT  = cfg["game_root"]
 APPID_FILE = os.path.join(GAME_ROOT, "steam_appid.txt")
 GAME_EXE   = os.path.join(GAME_ROOT, "SonicRacingCrossWorldsONT.exe")
 
-# ── Mod Helpers ───────────────────────────────────────────────────
 def list_mod_folders(path):
     if not os.path.isdir(path):
         return []
@@ -144,7 +139,6 @@ def disable_mod(mod_name, cfg):
     cfg["enabled_mods"][mod_name] = False
     save_config(cfg)
 
-# ── Dark Theme Styling ─────────────────────────────────────────────
 def set_dark_mode(root):
     style = ttk.Style(root)
     style.theme_use("clam")
@@ -199,7 +193,7 @@ def set_dark_mode(root):
         foreground=[("selected", fg)]
     )
 
-# ── Main Application ───────────────────────────────────────────────
+# Crosspatch shit starts here
 class CrossPatchMain:
     def __init__(self, root):
         self.root = root
@@ -210,7 +204,6 @@ class CrossPatchMain:
         mid = ttk.Frame(root, padding=8)
         mid.pack(fill=tk.BOTH, expand=True)
 
-        # Treeview with checkbox column
         cols = ("enabled", "name", "version", "author")
         self.tree = ttk.Treeview(mid, columns=cols, show="headings")
         self.tree.heading("enabled", text="")
@@ -228,7 +221,6 @@ class CrossPatchMain:
 
         self.refresh()
 
-        # Button row
         btn_frame = ttk.Frame(root, padding=8)
         btn_frame.pack(fill=tk.X)
 
@@ -267,7 +259,6 @@ class CrossPatchMain:
             return
         vals = self.tree.item(row, "values")
         display_name = vals[1]
-        # Find mod folder by matching display name
         for mod in list_mod_folders(self.cfg["mods_folder"]):
             info = read_mod_info(os.path.join(self.cfg["mods_folder"], mod))
             if info.get("name", mod) == display_name:
@@ -286,8 +277,6 @@ class CrossPatchMain:
 
         frame = ttk.Frame(win, padding=10)
         frame.pack(fill=tk.BOTH, expand=True)
-
-        # Show logs checkbox
         self.show_logs_var = tk.BooleanVar(
             value=self.cfg.get("show_cmd_logs", False)
         )
@@ -299,7 +288,6 @@ class CrossPatchMain:
         )
         chk.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,8))
 
-        # Game directory picker
         ttk.Label(frame, text="Game Directory:").grid(row=1, column=0, sticky="w")
         self.game_root_var = tk.StringVar(value=self.cfg["game_root"])
         entry = ttk.Entry(frame, textvariable=self.game_root_var, width=50, state="readonly")
@@ -325,14 +313,11 @@ class CrossPatchMain:
         )
         if not new_root:
             return
-
-        # Update all references
         self.game_root_var.set(new_root)
         self.cfg["game_root"] = new_root
         self.cfg["game_mods_folder"] = os.path.join(new_root, "UNION", "Content", "Paks", "~mods")
         save_config(self.cfg)
-
-        # Update module globals
+        
         global GAME_ROOT, APPID_FILE, GAME_EXE
         GAME_ROOT  = new_root
         APPID_FILE = os.path.join(GAME_ROOT, "steam_appid.txt")
