@@ -9,7 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 
 CONFIG_FILE = "mod_manager_config.json"
 APP_TITLE   = "CrossPatch - A Crossworlds Mod Manager"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 
 def show_console():
     try:
@@ -25,7 +25,7 @@ def hide_console():
     except Exception:
         pass
 
-def create_appid_file():
+def create_appid_file(): # UNUSED SHOULD NOT EXIST BUT I'M TOO LAZY TO DELETE
     try:
         os.makedirs(GAME_ROOT, exist_ok=True)
         with open(APPID_FILE, "w") as f:
@@ -38,13 +38,16 @@ def create_appid_file():
         messagebox.showerror("Error", f"Could not patch game:\n{e}")
 
 def launch_game():
+    print(f"Attempting to launch {GAME_EXE}...")
     if not os.path.exists(GAME_EXE):
+        print(f"Could not find {GAME_EXE}")
         messagebox.showerror(
             "Error",
-            "You don't have Crossworlds installed... Did you accidentally delete it?"
+            "You don't have Crossworlds installed"
         )
         return
     subprocess.Popen([GAME_EXE], cwd=GAME_ROOT)
+    print(f"Opening Crossworlds...")
 
 def default_mods_folder():
     app_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
@@ -80,10 +83,12 @@ def load_config():
         "enabled_mods":     {},
         "show_cmd_logs":    False
     }
+    print(f"Config Loaded")
 
 def save_config(cfg):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
+    print(f"Config Saved")
 
 cfg        = load_config()
 GAME_ROOT  = cfg["game_root"]
@@ -110,34 +115,61 @@ def read_mod_info(mod_path):
         except Exception:
             return {}
     return {}
+    print (f"info json {mod_path} read")
+
+def get_game_mods_folder(cfg):
+    return os.path.join(
+        cfg["game_root"],
+        "UNION",
+        "Content",
+        "Paks",
+        "~mods"
+    )
 
 def enable_mod(mod_name, cfg):
+    print(f"enabled {mod_name}")
+
     src = os.path.join(cfg["mods_folder"], mod_name)
-    dst = cfg["game_mods_folder"]
+    dst = get_game_mods_folder(cfg)
     os.makedirs(dst, exist_ok=True)
+
     for root, _, files in os.walk(src):
         for f in files:
             if f.lower() == "info.json":
                 continue
-            shutil.copy2(os.path.join(root, f), os.path.join(dst, f))
+            shutil.copy2(
+                os.path.join(root, f),
+                os.path.join(dst, f)
+            )
+
     cfg["enabled_mods"][mod_name] = True
+    print(f"{mod_name} files copied to {dst}")
     save_config(cfg)
 
 def disable_mod(mod_name, cfg):
-    dst = cfg["game_mods_folder"]
+    print(f"disabled {mod_name}")
+
+    dst = get_game_mods_folder(cfg)
     if not os.path.isdir(dst):
         return
+
     src = os.path.join(cfg["mods_folder"], mod_name)
     to_remove = {
         f for _, _, files in os.walk(src)
-        for f in files if f.lower() != "info.json"
+        for f in files
+        if f.lower() != "info.json"
     }
+
     for f in to_remove:
         path = os.path.join(dst, f)
         if os.path.exists(path):
             os.remove(path)
+
     cfg["enabled_mods"][mod_name] = False
+    print(f"{mod_name} files removed from {dst}")
     save_config(cfg)
+    
+    
 
 def set_dark_mode(root):
     style = ttk.Style(root)
@@ -251,6 +283,7 @@ class CrossPatchMain:
                 "", tk.END,
                 values=(check, name, version, author)
             )
+        print(f"Refreshed")
 
     def on_tree_click(self, event):
         row = self.tree.identify_row(event.y)
@@ -297,6 +330,8 @@ class CrossPatchMain:
 
         frame.columnconfigure(1, weight=1)
 
+        print(f"Opened Settings")
+
     def on_toggle_logs(self):
         enabled = self.show_logs_var.get()
         self.cfg["show_cmd_logs"] = enabled
@@ -325,6 +360,7 @@ class CrossPatchMain:
 
 def main():
     root = tk.Tk()
+    root.iconbitmap("CrossP.ico")
     root.geometry("580x700")
     root.resizable(False, False)
 
