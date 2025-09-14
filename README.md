@@ -23,7 +23,7 @@ below is a template you can use to set up your own, it must follow this exact fo
 
 ```json
 {
-  "name": "",
+  "name": "YOUR MOD NAME",
   "version": "1.0",
   "author": ""
 }
