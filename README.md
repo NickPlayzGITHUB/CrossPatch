@@ -12,6 +12,12 @@ CrossPatch is an easy to use mod manager for Sonic Racing: Crossworlds
 - Automatic folder creation, no need to set up your ~mods folder in the game files
 - Supports ALL Pak mods, even if they don't support CrossPatch
 - For mods that do support Crosspatch, there's support for custom mod display names, authors, version numbers, etc.
+- Simple, Clean, and easy to use UI
+- Ability to launch the game via CrossPatch
+
+## Misc Info
+
+For setting up custom display names, authors and version, you just need to create a file named "info.json
 
 
 
