@@ -13,7 +13,7 @@ from tkinter import filedialog, messagebox, ttk
 
 CONFIG_FILE = "mod_manager_config.json"
 APP_TITLE   = "CrossPatch - A Crossworlds Mod Manager"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 UPDATE_URL = "https://raw.githubusercontent.com/NickPlayzGITHUB/CrossPatch/refs/heads/main/version.txt"
 GITHUB_REDIRECT = "https://github.com/NickPlayzGITHUB/CrossPatch/releases/"
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20 
@@ -115,10 +115,11 @@ def launch_game():
                 "You don't have Crossworlds installed"
             )
             return
-        subprocess.Popen([GAME_EXE], cwd=GAME_ROOT)
+        webbrowser.open("steam://run/3601140")  # Unwidowfied launch command
     elif platform.system() == "Linux":
         subprocess.Popen(["steam", "steam://rungameid/3601140"])
     print("Opening Crossworlds...")
+    
 
 def default_mods_folder():
     app_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
