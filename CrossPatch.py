@@ -6,9 +6,9 @@ import subprocess
 import ctypes
 import urllib.request
 import webbrowser
-import winsound
 import threading
 import tkinter as tk
+import platform
 from tkinter import filedialog, messagebox, ttk
 
 CONFIG_FILE = "mod_manager_config.json"
@@ -106,15 +106,18 @@ def check_for_updates(root):
 
 
 def launch_game():
-    print(f"Attempting to launch {GAME_EXE}...")
-    if not os.path.exists(GAME_EXE):
-        print(f"Could not find {GAME_EXE}")
-        messagebox.showerror(
-            "Error",
-            "You don't have Crossworlds installed"
-        )
-        return
-    subprocess.Popen([GAME_EXE], cwd=GAME_ROOT)
+    if platform.system() == "Windows":
+        print(f"Attempting to launch {GAME_EXE}...")
+        if not os.path.exists(GAME_EXE):
+            print(f"Could not find {GAME_EXE}")
+            messagebox.showerror(
+                "Error",
+                "You don't have Crossworlds installed"
+            )
+            return
+        subprocess.Popen([GAME_EXE], cwd=GAME_ROOT)
+    elif platform.system() == "Linux":
+        subprocess.Popen(["steam", "steam://rungameid/3601140"])
     print("Opening Crossworlds...")
 
 def default_mods_folder():
@@ -124,7 +127,11 @@ def default_mods_folder():
     return path
 
 def load_config():
-    default_root = r"C:\Program Files (x86)\Steam\steamapps\common\SonicRacingCrossWorldsDemo"
+    default_root = ""
+    if platform.system() == "Windows":
+        default_root = r"C:\Program Files (x86)\Steam\steamapps\common\SonicRacingCrossWorldsDemo"
+    elif platform.system() == "Linux":
+        default_root = os.path.join(os.path.expanduser("~"), ".local", "share", "Steam", "steamapps", "common", "SonicRacingCrossWorldsDemo")
     default_mods = os.path.join(default_root, "UNION", "Content", "Paks", "~mods")
     os.makedirs(default_mods, exist_ok=True)
     if os.path.exists(CONFIG_FILE):
@@ -540,7 +547,7 @@ class CrossPatchMain:
 
 def main():
     root = tk.Tk()
-    root.iconbitmap("CrossP.ico")
+    root.iconphoto(False, tk.PhotoImage(file="CrossP.png"))
     root.geometry("580x700")
     root.resizable(False, False)
     if cfg.get("show_cmd_logs"):
