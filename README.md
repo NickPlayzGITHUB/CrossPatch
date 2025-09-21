@@ -14,6 +14,7 @@ CrossPatch is an easy to use mod manager for Sonic Racing: Crossworlds
 - For mods that do support Crosspatch, there's support for custom mod display names, authors, version numbers, etc.
 - Simple, Clean, and easy to use UI
 - Ability to launch the game via CrossPatch
+- Functions on both Windows and Linux
 
 ## Misc Info
 
