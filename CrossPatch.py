@@ -548,7 +548,8 @@ class CrossPatchMain:
 
 def main():
     root = tk.Tk()
-    root.iconphoto(False, tk.PhotoImage(file="CrossP.png"))
+    if platform.system() == "Windows":
+        root.iconbitmap("CrossP.ico")
     root.geometry("580x700")
     root.resizable(False, False)
     if cfg.get("show_cmd_logs"):
