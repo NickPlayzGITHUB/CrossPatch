@@ -516,8 +516,46 @@ class CrossPatchMain:
         pick_btn = ttk.Button(frame, text="...", width=3, command=self.on_change_game_root)
         pick_btn.grid(row=1, column=2, sticky="e", padx=(5,0))
         frame.columnconfigure(1, weight=1)
+        ttk.Button(frame, text="Credits", command=lambda: self.open_credits(win))\
+        .grid(row=2, column=0, columnspan=3, pady=(12,0))
+
 
         print("Opened Settings")
+
+    def open_credits(self, settings_win=None):
+        if settings_win:
+            settings_win.destroy()
+
+        win = tk.Toplevel(self.root)
+        set_dark_mode(win)
+        win.title("Credits")
+        win.geometry("400x240")
+        win.resizable(False, False)
+        win.transient(self.root)
+        win.grab_set()
+
+        win.update_idletasks()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        rw, rh = self.root.winfo_width(), self.root.winfo_height()
+        ww, wh = win.winfo_width(), win.winfo_height()
+        win.geometry(f"+{rx + (rw-ww)//2}+{ry + (rh-wh)//2}")
+
+        frame = ttk.Frame(win, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="NockCS", font=("Segoe UI", 20, "bold"))\
+            .pack(anchor="center", pady=(0,4))
+        ttk.Label(frame, text="Lead Developer/Programmer", font=("Segoe UI", 10))\
+            .pack(anchor="center", pady=(0,12))
+
+        ttk.Label(frame, text="AntiApple4life", font=("Segoe UI", 16, "bold"))\
+            .pack(anchor="center", pady=(0,4))
+        ttk.Label(frame, text="Linux Support Programmer", font=("Segoe UI", 10))\
+            .pack(anchor="center", pady=(0,12))
+
+        ttk.Button(frame, text="Close", command=win.destroy)\
+            .pack(pady=(20,0))
+
         
 
     # Something is going wrong here
