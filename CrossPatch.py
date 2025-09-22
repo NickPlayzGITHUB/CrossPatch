@@ -115,9 +115,9 @@ def launch_game():
                 "You don't have Crossworlds installed"
             )
             return
-        webbrowser.open("steam://run/3601140")  # Unwidowfied launch command
+        webbrowser.open("steam://run/2486820")
     elif platform.system() == "Linux":
-        subprocess.Popen(["steam", "steam://rungameid/3601140"])
+        subprocess.Popen(["steam", "steam://rungameid/2486820"])
     print("Opening Crossworlds...")
     
 
@@ -130,9 +130,9 @@ def default_mods_folder():
 def load_config():
     default_root = ""
     if platform.system() == "Windows":
-        default_root = r"C:\Program Files (x86)\Steam\steamapps\common\SonicRacingCrossWorldsDemo"
+        default_root = r"C:\Program Files (x86)\Steam\steamapps\common\SonicRacingCrossWorlds"
     elif platform.system() == "Linux":
-        default_root = os.path.join(os.path.expanduser("~"), ".local", "share", "Steam", "steamapps", "common", "SonicRacingCrossWorldsDemo")
+        default_root = os.path.join(os.path.expanduser("~"), ".local", "share", "Steam", "steamapps", "common", "SonicRacingCrossWorlds")
     default_mods = os.path.join(default_root, "UNION", "Content", "Paks", "~mods")
     os.makedirs(default_mods, exist_ok=True)
     if os.path.exists(CONFIG_FILE):
@@ -165,7 +165,7 @@ def save_config(cfg):
 
 cfg        = load_config()
 GAME_ROOT  = cfg["game_root"]
-GAME_EXE   = os.path.join(GAME_ROOT, "SonicRacingCrossWorldsDemo.exe")
+GAME_EXE   = os.path.join(GAME_ROOT, "SonicRacingCrossWorlds.exe") # this constant shouldn't exist anymore btw but oh well
 
 def list_mod_folders(path):
     if not os.path.isdir(path):
@@ -581,7 +581,7 @@ class CrossPatchMain:
         save_config(self.cfg)
         global GAME_ROOT, GAME_EXE
         GAME_ROOT  = new_root
-        GAME_EXE   = os.path.join(GAME_ROOT, "SonicRacingCrossWorldsDemo.exe")
+        GAME_EXE   = os.path.join(GAME_ROOT, "SonicRacingCrossWorlds.exe")
         print("Updated root folder")
 
 def main():
