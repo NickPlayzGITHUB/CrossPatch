@@ -18,6 +18,8 @@ CrossPatch is an easy to use mod manager for Sonic Racing: Crossworlds
 
 ## Misc Info
 
+It is HIGHLY reccomended that you run CrossPatch as an Admin or you are a Local Admin on your device. Not being an admin can inhibit CrossPatch from setting up your mods correctly and cause issues.
+
 For setting up custom display names, authors and version to support CrossPatch, you just need to create a file named "info.json" in your mod folder
 
 below is a template you can use to set up your own, it must follow this exact format
