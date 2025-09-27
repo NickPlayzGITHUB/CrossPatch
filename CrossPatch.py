@@ -9,28 +9,57 @@ import webbrowser
 import threading
 import tkinter as tk
 import platform
+import requests
+from bs4 import BeautifulSoup
 from tkinter import filedialog, messagebox, ttk
 
 CONFIG_FILE = "mod_manager_config.json"
 APP_TITLE   = "CrossPatch - A Crossworlds Mod Manager"
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 UPDATE_URL = "https://raw.githubusercontent.com/NickPlayzGITHUB/CrossPatch/refs/heads/main/version.txt"
 GITHUB_REDIRECT = "https://github.com/NickPlayzGITHUB/CrossPatch/releases/"
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20 
 
+# Store original stdout/stderr
+_original_stdout = sys.stdout
+_original_stderr = sys.stderr
+_console_streams = None
+
 def show_console():
+    global _console_streams
     try:
         if ctypes.windll.kernel32.AllocConsole():
-            sys.stdout = open("CONOUT$", "w")
-            sys.stderr = open("CONOUT$", "w")
-    except Exception:
-        pass
+            _console_streams = (
+                open("CONOUT$", "w", buffering=1),
+                open("CONOUT$", "w", buffering=1)
+            )
+            sys.stdout = _console_streams[0]
+            sys.stderr = _console_streams[1]
+    except Exception as e:
+        print(f"Failed to show console: {e}")
+        sys.stdout = _original_stdout
+        sys.stderr = _original_stderr
 
-def hide_console(): # Doesn't work? Fix at some point
+def hide_console():
+    global _console_streams
     try:
+        # Restore original streams first
+        sys.stdout = _original_stdout
+        sys.stderr = _original_stderr
+        
+        # Close console streams if they exist
+        if _console_streams:
+            try:
+                _console_streams[0].close()
+                _console_streams[1].close()
+            except:
+                pass
+            _console_streams = None
+            
+        # Free the console
         ctypes.windll.kernel32.FreeConsole()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Failed to hide console: {e}")
 
 def fetch_remote_version():
     print("Fetching version.txt")
@@ -111,8 +140,8 @@ def launch_game():
         if not os.path.exists(GAME_EXE):
             print(f"Could not find {GAME_EXE}")
             messagebox.showerror(
-                "Error",
-                "You don't have Crossworlds installed"
+                "Error, Could not find CrossWorlds",
+                "You don't have Crossworlds installed\n\nEnsure you have the correct directory set\nYou can find your CrossWorld folder\nby going onto the Steam game settings\nManage > Browse Local Directory\n\nPlease see https://gamebanana.com/tools/20804#H1_5 for more info"
             )
             return
         webbrowser.open("steam://run/2486820")
@@ -165,7 +194,7 @@ def save_config(cfg):
 
 cfg        = load_config()
 GAME_ROOT  = cfg["game_root"]
-GAME_EXE   = os.path.join(GAME_ROOT, "SonicRacingCrossWorlds.exe") # this constant shouldn't exist anymore btw but oh well
+GAME_EXE   = os.path.join(GAME_ROOT, "SonicRacingCrossWorlds.exe")
 
 def list_mod_folders(path):
     if not os.path.isdir(path):
@@ -212,8 +241,21 @@ def enable_mod(mod_name, cfg):
                 os.path.join(dst, f)
             )
     cfg["enabled_mods"][mod_name] = True
-    print(f"{mod_name} files copied to {dst}")
     save_config(cfg)
+
+def clean_mods_folder(cfg): #enhanced refresh
+    dst = get_game_mods_folder(cfg)
+    if not os.path.isdir(dst):
+        return
+        
+    for filename in os.listdir(dst):
+        file_path = os.path.join(dst, filename)
+        try:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            print(f"Error removing {filename}: {e}")
+    
 
 def disable_mod(mod_name, cfg):
     print(f"disabled {mod_name}")
@@ -231,7 +273,6 @@ def disable_mod(mod_name, cfg):
         if os.path.exists(path):
             os.remove(path)
     cfg["enabled_mods"][mod_name] = False
-    print(f"{mod_name} files removed from {dst}")
     save_config(cfg)
 
 def set_dark_mode(root):
@@ -281,6 +322,67 @@ def set_dark_mode(root):
         foreground=[("selected", fg)]
     )
 
+class UpdateListWindow(tk.Toplevel): # Why did it make a new class....?
+    def __init__(self, parent, updates):
+        super().__init__(parent)
+        self.title("Available Updates")
+        set_dark_mode(self)
+        self.resizable(False, False)
+        
+        main_frame = ttk.Frame(self, padding=12)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        if updates:
+            ttk.Label(
+                main_frame,
+                text="The following mods have updates available:",
+                font=("Segoe UI", 10)
+            ).pack(pady=(0, 10))
+        else:
+            ttk.Label(
+                main_frame,
+                text="No updates available",
+                font=("Segoe UI", 10)
+            ).pack(pady=(0, 10))
+        
+        # Create a frame for the updates list
+        updates_frame = ttk.Frame(main_frame)
+        updates_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Add each mod update
+        for mod_name, mod_info in updates.items():
+            mod_frame = ttk.Frame(updates_frame)
+            mod_frame.pack(fill=tk.X, pady=2)
+            
+            info_text = f"{mod_name} (v{mod_info['current']} → v{mod_info['new']})"
+            ttk.Label(mod_frame, text=info_text).pack(side=tk.LEFT)
+            
+            ttk.Button(
+                mod_frame,
+                text="Update",
+                command=lambda url=mod_info['url']: self.open_mod_page(url)
+            ).pack(side=tk.RIGHT)
+        
+        # Close button at the bottom
+        ttk.Button(
+            main_frame,
+            text="Close",
+            command=self.destroy
+        ).pack(pady=(10, 0))
+        
+        # Center the window
+        self.transient(parent)
+        self.grab_set()
+        
+        self.update_idletasks()
+        rx, ry = parent.winfo_rootx(), parent.winfo_rooty()
+        rw, rh = parent.winfo_width(), parent.winfo_height()
+        ww, wh = self.winfo_width(), self.winfo_height()
+        self.geometry(f"+{rx + (rw-ww)//2}+{ry + (rh-wh)//2}")
+    
+    def open_mod_page(self, url):
+        webbrowser.open(url)
+
 class CrossPatchMain:
     def __init__(self, root):
         self.root = root
@@ -322,6 +424,10 @@ class CrossPatchMain:
             label="Edit mod info",
             command=self.edit_selected_mod_info
         )
+        self.context_menu.add_command(
+            label="Check for updates",
+            command=self.check_mod_updates
+        )
         self.tree.bind("<Button-3>", self.on_right_click)
         self.refresh()
         btn_frame = ttk.Frame(root, padding=8)
@@ -335,10 +441,23 @@ class CrossPatchMain:
             command=self.open_settings
         )
         settings_btn.pack(side=tk.RIGHT, padx=5)
+        
+        
+        ttk.Button(btn_frame, text="Check for Updates",
+                  command=self.check_all_mod_updates).pack(side=tk.LEFT, padx=5)
+        
         ttk.Label(root, text=f"CrossPatch {APP_VERSION}",
                   font=("Segoe UI", 8)).pack(pady=(0,8))
 
     def refresh(self):
+        
+        clean_mods_folder(self.cfg)
+        
+        for mod in list_mod_folders(self.cfg["mods_folder"]):
+            if self.cfg["enabled_mods"].get(mod, False):
+                enable_mod(mod, self.cfg)
+        
+        # Refresh the display
         self.tree.delete(*self.tree.get_children())
         for mod in list_mod_folders(self.cfg["mods_folder"]):
             info    = read_mod_info(os.path.join(self.cfg["mods_folder"], mod))
@@ -352,6 +471,7 @@ class CrossPatchMain:
                 values=(check, name, version, author)
             )
         print("Refreshed")
+
 
     def on_tree_click(self, event):
         row = self.tree.identify_row(event.y)
@@ -393,6 +513,206 @@ class CrossPatchMain:
                 except Exception as e:
                     messagebox.showerror(f"{e}")
                 break
+
+    def check_all_mod_updates(self):
+        print("Checking all mods for updates...")
+        updates = {}
+        
+        for mod in list_mod_folders(self.cfg["mods_folder"]):
+            mod_info = read_mod_info(os.path.join(self.cfg["mods_folder"], mod))
+            mod_name = mod_info.get("name", mod)
+            mod_version = mod_info.get("version", "1.0")
+            mod_page = mod_info.get("mod_page")
+            
+            if not mod_page or not mod_page.startswith("https://gamebanana.com"):
+                print(f"Skipping {mod_name} - no Gamebanana page")
+                continue
+                
+            try:
+                
+                item_id = None
+                for type_path in ["mods", "wips", "updates"]:
+                    if f"/{type_path}/" in mod_page:
+                        parts = mod_page.split(f"/{type_path}/")[1].split("/")
+                        if parts and parts[0].isdigit():
+                            item_id = parts[0]
+                            break
+                
+                if not item_id:
+                    parts = [p for p in mod_page.split("/") if p.isdigit()]
+                    if parts:
+                        item_id = parts[0]
+                    else:
+                        print(f"Could not extract mod ID for {mod_name}")
+                        continue
+                
+                api_url = f"https://gamebanana.com/apiv11/Mod/{item_id}?_csvProperties=_sVersion"
+                headers = {
+                    'User-Agent': 'CrossPatch/1.0.6',
+                    'Accept': 'application/json'
+                }
+                
+                response = requests.get(api_url, headers=headers)
+                response.raise_for_status()
+                item_data = response.json()
+                
+                gb_version = item_data.get("_sVersion")
+                if not gb_version:
+                    print(f"No version info found for {mod_name}")
+                    continue
+                
+                if is_newer_version(mod_version, gb_version):
+                    updates[mod_name] = {
+                        'current': mod_version,
+                        'new': gb_version,
+                        'url': mod_page
+                    }
+                    print(f"Update found for {mod_name}: {mod_version} -> {gb_version}")
+                
+            except Exception as e:
+                print(f"Error checking {mod_name}: {str(e)}")
+                continue
+        
+        UpdateListWindow(self.root, updates)
+    
+    def check_mod_updates(self):
+        print("Checking for mod updates...")
+        sel = self.tree.selection()
+        if not sel:
+            return
+        
+        tree_id = sel[0]
+        display_name = self.tree.item(tree_id, "values")[1]
+        
+        mod_folder = None
+        mod_info = None
+        for mod in list_mod_folders(self.cfg["mods_folder"]):
+            info = read_mod_info(os.path.join(self.cfg["mods_folder"], mod))
+            if info.get("name", mod) == display_name:
+                mod_folder = mod
+                mod_info = info
+                break
+                
+        if not mod_folder or not mod_info:
+            print(f"Could not find mod info for {display_name}")
+            return
+            
+        mod_page = mod_info.get("mod_page")
+        if not mod_page or not mod_page.startswith("https://gamebanana.com"): # no porn links please
+            messagebox.showinfo("Update Check", "This mod does not support updating.")
+            return
+            
+        try:
+            # (Hopefully) supported URLS:
+            # https://gamebanana.com/mods/something
+            # https://gamebanana.com/wips/something
+            # https://gamebanana.com/updates/something
+            
+            item_type = None
+            item_id = None
+            
+            for type_path in ["mods", "wips", "updates"]:
+                if f"/{type_path}/" in mod_page:
+                    parts = mod_page.split(f"/{type_path}/")[1].split("/")
+                    if parts and parts[0].isdigit():
+                        item_type = type_path
+                        item_id = parts[0]
+                        break
+            
+            if not item_id:
+                parts = [p for p in mod_page.split("/") if p.isdigit()]
+                if parts:
+                    item_id = parts[0]
+                    item_type = "mods"  # Default to mods because who the fuck uses anything else
+                else:
+                    messagebox.showwarning("Update Check", "I can't find the ID fix this shit")
+                    return
+
+            print(f"Checking {item_type} ID: {item_id}")
+            
+    
+            api_url = f"https://gamebanana.com/apiv11/Mod/{item_id}?_csvProperties=_sVersion"
+            print(f"Making request to: {api_url}")
+            
+            headers = {
+                'User-Agent': 'CrossPatch/1.0.7',
+                'Accept': 'application/json'
+            }
+            
+            response = requests.get(api_url, headers=headers)
+            print(f"Response status code: {response.status_code}")
+            print(f"Response headers: {response.headers}")
+            print(f"Response content: {response.text[:200]}...")  # Print first 200 chars
+            
+            response.raise_for_status()
+            
+            try:
+                item_data = response.json()
+                print(f"Parsed JSON data: {item_data}")
+                
+                # Get the version
+                gb_version = item_data.get("_sVersion")
+                if not gb_version:
+                    messagebox.showwarning("Update Check", "Could not find _sVersion in API response")
+                    return
+                    
+                print(f"Found version: {gb_version}")
+            except ValueError as e:
+                print(f"Failed to parse JSON response. Full response:\n{response.text}")
+                raise Exception(f"Failed to parse Gamebanana API response: {str(e)}")
+            local_version = mod_info.get("version", "1.0")
+            
+            if is_newer_version(local_version, gb_version):
+                self.show_mod_update_prompt(mod_page, display_name, local_version, gb_version)
+            else:
+                messagebox.showinfo("Update Check", f"{display_name} is up to date (v{local_version})")
+                
+        except Exception as e:
+            messagebox.showerror("Update Check Error", f"Failed to check for updates: {str(e)}")
+            
+    def show_mod_update_prompt(self, mod_page, mod_name, current_version, new_version):
+        prompt = tk.Toplevel(self.root)
+        set_dark_mode(prompt)
+        prompt.title("Update Available")
+        prompt.resizable(False, False)
+        
+        ttk.Label(
+            prompt,
+            text=f"A new version of {mod_name} is available!\n\n"
+                 f"Current version: v{current_version}\n"
+                 f"New version: v{new_version}"
+        ).pack(padx=12, pady=(12, 6))
+        
+        btn_frame = ttk.Frame(prompt)
+        btn_frame.pack(padx=12, pady=(0, 12))
+        
+        def on_update():
+            webbrowser.open(mod_page)
+            prompt.destroy()
+            
+        def on_ignore():
+            prompt.destroy()
+            
+        ttk.Button(btn_frame, text="Update", command=on_update)\
+            .pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btn_frame, text="Ignore", command=on_ignore)\
+            .pack(side=tk.LEFT)
+            
+        prompt.attributes("-topmost", True)
+        
+        prompt.update_idletasks()
+        root_x = self.root.winfo_rootx()
+        root_y = self.root.winfo_rooty()
+        root_w = self.root.winfo_width()
+        root_h = self.root.winfo_height()
+        
+        win_w = prompt.winfo_width()
+        win_h = prompt.winfo_height()
+        
+        pos_x = root_x + (root_w - win_w) // 2
+        pos_y = root_y + (root_h - win_h) // 2
+        
+        prompt.geometry(f"+{pos_x}+{pos_y}")
 
     def edit_selected_mod_info(self):
         print("Editing mod info.json")
