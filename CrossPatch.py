@@ -15,12 +15,11 @@ from tkinter import filedialog, messagebox, ttk
 
 CONFIG_FILE = "mod_manager_config.json"
 APP_TITLE   = "CrossPatch - A Crossworlds Mod Manager"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 UPDATE_URL = "https://raw.githubusercontent.com/NickPlayzGITHUB/CrossPatch/refs/heads/main/version.txt"
 GITHUB_REDIRECT = "https://github.com/NickPlayzGITHUB/CrossPatch/releases/"
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20 
 
-# Store original stdout/stderr
 _original_stdout = sys.stdout
 _original_stderr = sys.stderr
 _console_streams = None
@@ -35,6 +34,7 @@ def show_console():
             )
             sys.stdout = _console_streams[0]
             sys.stderr = _console_streams[1]
+            print("Welcome to CrossPatch's Console logs! If you're a regular user there's really no point in having this enabled\nYou should only use this for debugging purposes, serves no other purpose really")
     except Exception as e:
         print(f"Failed to show console: {e}")
         sys.stdout = _original_stdout
@@ -43,11 +43,9 @@ def show_console():
 def hide_console():
     global _console_streams
     try:
-        # Restore original streams first
         sys.stdout = _original_stdout
         sys.stderr = _original_stderr
         
-        # Close console streams if they exist
         if _console_streams:
             try:
                 _console_streams[0].close()
@@ -56,7 +54,6 @@ def hide_console():
                 pass
             _console_streams = None
             
-        # Free the console
         ctypes.windll.kernel32.FreeConsole()
     except Exception as e:
         print(f"Failed to hide console: {e}")
@@ -136,14 +133,7 @@ def check_for_updates(root):
 
 def launch_game():
     if platform.system() == "Windows":
-        print(f"Attempting to launch {GAME_EXE}...")
-        if not os.path.exists(GAME_EXE):
-            print(f"Could not find {GAME_EXE}")
-            messagebox.showerror(
-                "Error, Could not find CrossWorlds",
-                "You don't have Crossworlds installed\n\nEnsure you have the correct directory set\nYou can find your CrossWorld folder\nby going onto the Steam game settings\nManage > Browse Local Directory\n\nPlease see https://gamebanana.com/tools/20804#H1_5 for more info"
-            )
-            return
+        print(f"Attempting to launch {GAME_EXE}...") # Removed the EXE check since too many people were having issues, idk why that was even a thing after I made the game launch from steam instead of the exe
         webbrowser.open("steam://run/2486820")
     elif platform.system() == "Linux":
         subprocess.Popen(["steam", "steam://rungameid/2486820"])
@@ -241,6 +231,7 @@ def enable_mod(mod_name, cfg):
                 os.path.join(dst, f)
             )
     cfg["enabled_mods"][mod_name] = True
+    print(f"{mod_name} files copied to {dst}")
     save_config(cfg)
 
 def clean_mods_folder(cfg): #enhanced refresh
