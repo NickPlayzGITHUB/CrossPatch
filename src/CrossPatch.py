@@ -19,6 +19,10 @@ class CrossPatchWindow(tk.Tk):
 
         self.withdraw()
 
+        # Theme: Azure dark
+        self.tk.call('source', os.path.join(os.getcwd(), 'assets', 'themes', 'azure', 'azure.tcl'))
+        self.tk.call('set_theme', 'dark')
+
         if platform.system() == "Windows":
             icon_path = os.path.join(os.getcwd(), "assets", "CrossP.ico")
             self.iconbitmap(icon_path)
