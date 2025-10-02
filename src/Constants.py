@@ -1,0 +1,5 @@
+APP_TITLE = "CrossPatch - A Crossworlds Mod Manager"
+APP_VERSION = "1.0.8"
+CONFIG_FILE = "mod_manager_config.json"
+UPDATE_URL = "https://raw.githubusercontent.com/NickPlayzGITHUB/CrossPatch/refs/heads/main/version.txt"
+GITHUB_REDIRECT = "https://github.com/NickPlayzGITHUB/CrossPatch/releases/"
