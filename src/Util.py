@@ -284,7 +284,7 @@ def enable_mod(mod_name, cfg, priority):
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
     else: # Default to pak mod behavior
         # Handles 'pak' mods. Create a folder with priority prefix, e.g., "0.MyMod"
-        prefixed_mod_name = f"{priority}.{mod_name}"
+        prefixed_mod_name = f"{priority:03d}.{mod_name}"
         dst = os.path.join(get_game_mods_folder(cfg), prefixed_mod_name)
         os.makedirs(dst, exist_ok=True)
         for root, _, files in os.walk(src):
