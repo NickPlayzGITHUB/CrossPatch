@@ -22,20 +22,13 @@ It is HIGHLY reccomended that you run CrossPatch as an Admin or you are a Local 
 
 For setting up custom display names, authors and version to support CrossPatch, you just need to create a file named "info.json" in your mod folder
 
-below is a template you can use to set up your own, it must follow this exact format
+Below is a template you can use. The `mod_type` field is optional and defaults to `"pak"`. Use `"ue4ss"` for UE4SS-based mods.
 
 ```json
 {
   "name": "YOUR MOD NAME",
   "version": "1.0",
-  "author": ""
+  "author": "Your Name",
+  "mod_type": "pak" 
 }
 ```
-
-
-
-
-
-
-
-
