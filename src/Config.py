@@ -3,7 +3,7 @@ import os
 import json
 import sys
 import ctypes
-import winreg
+if platform.system() == "Windows": import winreg
 from tkinter import filedialog, messagebox, Tk
 
 def get_config_dir():

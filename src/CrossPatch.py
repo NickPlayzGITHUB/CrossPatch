@@ -261,6 +261,10 @@ class CrossPatchWindow(TkinterDnD.Tk):
             label="Check for updates",
             command=self.check_mod_updates
         )
+        self.context_menu.add_command(
+            label="Delete mod",
+            command=self.delete_mod
+        )
         self.tree.bind("<Button-3>", self.on_right_click)
         self.refresh()
         btn_frame = ttk.Frame(self, padding=8)
@@ -426,6 +430,23 @@ class CrossPatchWindow(TkinterDnD.Tk):
                 subprocess.Popen(["xdg-open", folder])
             except FileNotFoundError:
                 messagebox.showerror("Error", f"Could not open folder. Please ensure xdg-open is installed.")
+
+    def delete_mod(self):
+        selected = self.tree.selection()
+        if not selected:
+            return
+        mod_id = selected[0]
+        # Confirm mod deletion
+        deletemod_confirm = tk.messagebox.askyesno(f"Mod Deletion", f"Are you sure you want to delete {mod_id}?",)
+        if deletemod_confirm:
+            print(f"Deleting mod {mod_id} from game folder (if exists)")
+            Util.remove_mod_from_game_folders(mod_id, self.cfg)
+
+            print(f"Deleting mod {mod_id} from mods folder")
+            shutil.rmtree(os.path.join(self.cfg["mods_folder"], mod_id))
+
+            print(f"Refreshing mod list")
+            self.refresh()
 
 
     def check_all_mod_updates(self):
