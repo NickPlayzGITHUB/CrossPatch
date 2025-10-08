@@ -4,14 +4,41 @@ import json
 import sys
 import ctypes
 import winreg
+from tkinter import filedialog, messagebox, Tk
 
-from Constants import CONFIG_FILE
+def get_config_dir():
+    """
+    Determines the appropriate directory for configuration files.
+    If CROSSPATCH_PORTABLE=1 is set, it uses the current working directory.
+    Otherwise, it uses platform-specific app data locations.
+    """
+    if os.environ.get("CROSSPATCH_PORTABLE") == "1":
+        return os.getcwd()
+
+    if platform.system() == "Windows":
+        return os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "CrossPatch")
+    else: # Linux and other UNIX-like systems
+        return os.path.join(os.path.expanduser("~"), ".config", "CrossPatch")
+
+CONFIG_DIR = get_config_dir()
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+os.makedirs(CONFIG_DIR, exist_ok=True)
 
 def default_mods_folder():
-    path = os.path.join(os.getcwd(), "mods")
-    print("Path: ", path)
-    os.makedirs(path, exist_ok=True)
-    return path
+    """Determines the default mods folder path based on operating mode."""
+    if os.environ.get("CROSSPATCH_PORTABLE") == "1":
+        path = os.path.join(os.getcwd(), "mods")
+        os.makedirs(path, exist_ok=True)
+        return path
+    
+    root = Tk()
+    root.withdraw()
+    messagebox.showinfo("Welcome to CrossPatch!", "Please select a folder to store your mods.", parent=root)
+    folder = filedialog.askdirectory(title="Select a folder for your mods", parent=root)
+    root.destroy()
+    if not folder:
+        sys.exit("No mods folder selected. Exiting.")
+    return folder
 
 _original_stdout = sys.stdout
 _original_stderr = sys.stderr
@@ -76,11 +103,12 @@ def load_config():
     if config_data and isinstance(config_data, dict):
         root = config_data.get("game_root", default_root)
         steam_detected = config_data.get("steam_detected", False)
-
         enabled_mods = config_data.get("enabled_mods", {})
         show_cmd_logs = config_data.get("show_cmd_logs", False)
+        # If mods_folder is missing after first launch, default to a subfolder in the config dir.
+        # This prevents asking the user repeatedly. The prompt should only be for the very first run.
         return {
-            "mods_folder": config_data.get("mods_folder", default_mods_folder()),
+            "mods_folder": config_data.get("mods_folder", os.path.join(CONFIG_DIR, "mods")),
             "game_root": root,
             "game_mods_folder": os.path.join(root, "UNION", "Content", "Paks", "~mods"),
             "ue4ss_mods_folder": os.path.join(root, "UNION", "Binaries", "Win64", "ue4ss", "Mods"),

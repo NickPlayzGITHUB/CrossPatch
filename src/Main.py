@@ -5,10 +5,9 @@ import os
 
 from CrossPatch import CrossPatchWindow
 import Util
-import Config
+import Config # This will now set up config paths on import
 
 SINGLE_INSTANCE_PORT = 38471 # A random, hopefully unused port
-
 if __name__ == "__main__":    
     # Try to bind to a port to enforce a single instance
     try:
