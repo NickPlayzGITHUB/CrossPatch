@@ -26,6 +26,11 @@ class CreditsWindow(tk.Toplevel):
             .pack(anchor="center", pady=(0,4))
         ttk.Label(frame, text="Codebase Janitor ;)", font=("Segoe UI", 10))\
             .pack(anchor="center", pady=(0,12))
+        
+        ttk.Label(frame, text="RED1", font=("Segoe UI", 16, "bold"))\
+            .pack(anchor="center", pady=(0,4))
+        ttk.Label(frame, text="Who invited this guy?", font=("Segoe UI", 10))\
+            .pack(anchor="center", pady=(0,12))
 
         ttk.Button(frame, text="Close", command=self.destroy)\
             .pack(pady=(20,0))

@@ -31,14 +31,21 @@ class DownloadManager:
     def download_mod_from_url(self, mod_url):
         threading.Thread(target=self._download_thread, args=(mod_url,), daemon=True).start()
 
+    def download_and_extract_to(self, url, extract_destination):
+        """Synchronously downloads and extracts an archive to a specific destination."""
+        self._download_thread(url, extract_destination)
+
     def _download_thread(self, mod_url):
         try:
             # 1. Get Mod Info from GameBanana API
-            item_id = self._get_item_id_from_url(mod_url)
-            if not item_id:
-                raise ValueError("Could not extract a valid Mod ID from the URL.")
+            item_type, item_id = self._get_item_details_from_url(mod_url)
+            if not item_type or not item_id:
+                raise ValueError("Could not extract a valid item type and ID from the URL.")
 
-            api_url = f"{GB_API_URL}{item_id}?_csvProperties=_sName,_aFiles"
+            # Convert plural item type (e.g., "sounds") to singular and capitalized (e.g., "Sound") for the API.
+            api_item_type = item_type.rstrip('s').capitalize()
+
+            api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles"
             response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.8'})
             response.raise_for_status()
             mod_data = response.json()
@@ -103,13 +110,76 @@ class DownloadManager:
                 self.progress_window.destroy()
             messagebox.showerror("Download Failed", f"An error occurred: {e}")
 
-    def _get_item_id_from_url(self, url):
-        # Extracts numeric ID from URLs like https://gamebanana.com/games/21640
+    def _download_thread(self, url, extract_override=None):
+        """
+        Internal download handler.
+        If extract_override is provided, it extracts to that path.
+        Otherwise, it extracts to the standard mods_folder.
+        """
+        try:
+            # 1. Get Item Info from GameBanana API
+            item_type, item_id = self._get_item_details_from_url(url)
+            if not item_type or not item_id:
+                raise ValueError("Could not extract a valid item type and ID from the URL.")
+
+            api_item_type = item_type.rstrip('s').capitalize()
+            api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles"
+            response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.8'})
+            response.raise_for_status()
+            item_data = response.json()
+
+            # 2. Find the download file
+            files = item_data.get('_aFiles')
+            if not files:
+                raise ValueError("No files found for this item in the API response.")
+            
+            best_file = max(files, key=lambda f: f.get('_nFilesize', 0))
+            download_url = best_file.get('_sDownloadUrl')
+            file_name = best_file.get('_sFile')
+            item_name = item_data.get('_sName').replace(" ", "")
+
+            if not download_url:
+                raise ValueError("Could not find a download URL for the primary file.")
+
+            # 3. Download the file with progress
+            self._show_progress_window(f"Downloading {item_name}...", file_name)
+            temp_archive_path = os.path.join(self.mods_folder, file_name) # Always download to a temp location
+            self._download_file_with_progress(download_url, temp_archive_path)
+
+            # 4. Extract the archive
+            self.progress_label_var.set("Extracting...")
+            extract_path = extract_override if extract_override else os.path.join(self.mods_folder, item_name)
+            self._extract_archive(temp_archive_path, extract_path)
+
+            # 5. Clean up
+            os.remove(temp_archive_path)
+            self.progress_window.destroy()
+
+            if not extract_override and self.on_complete:
+                self.parent.after(0, self.on_complete)
+
+        except Exception as e:
+            if hasattr(self, 'progress_window') and self.progress_window.winfo_exists():
+                self.progress_window.destroy()
+            # If running synchronously, we need to re-raise the exception
+            if extract_override:
+                raise e
+            messagebox.showerror("Download Failed", f"An error occurred: {e}")
+    def _get_item_details_from_url(self, url):
+        """
+        Extracts the item type (e.g., 'Mod', 'Sound') and ID from a GameBanana URL.
+        Returns a tuple (item_type, item_id) or (None, None).
+        """
+        # A list of valid GameBanana item types in their plural URL form.
+        valid_types = ["mods", "wips", "sounds", "sprays", "maps", "guis", "tools"]
         parts = url.split('/')
-        for part in reversed(parts):
-            if part.isdigit():
-                return part
-        return None
+        
+        for i, part in enumerate(parts):
+            if part in valid_types:
+                if i + 1 < len(parts) and parts[i+1].isdigit():
+                    return (part, parts[i+1]) # Returns plural form, e.g. ('sounds', '82487')
+
+        return (None, None)
 
     def _show_progress_window(self, title, file_name):
         self.progress_window = tk.Toplevel(self.parent)
@@ -126,6 +196,22 @@ class DownloadManager:
         self.progress_label_var = tk.StringVar(value="0.00 MB / 0.00 MB")
         ttk.Label(self.progress_window, textvariable=self.progress_label_var).pack(pady=5)
         Util.center_window(self.progress_window)
+        self.progress_window.update()
+
+    def _download_file_with_progress(self, url, destination_path):
+        with requests.get(url, stream=True, headers={'User-Agent': 'CrossPatch/1.0.8'}) as r:
+            r.raise_for_status()
+            total_size = int(r.headers.get('content-length', 0))
+            bytes_downloaded = 0
+            with open(destination_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    bytes_downloaded += len(chunk)
+                    if total_size > 0:
+                        progress = (bytes_downloaded / total_size) * 100
+                        self.progress_var.set(progress)
+                        self.progress_label_var.set(f"{bytes_downloaded/1024/1024:.2f} MB / {total_size/1024/1024:.2f} MB")
+                        self.progress_window.update_idletasks()
 
     def _security_scan(self, archive_path):
         """

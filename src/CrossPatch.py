@@ -1,5 +1,6 @@
 
 import os
+import ctypes
 import threading
 import platform
 import requests
@@ -135,7 +136,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
         # Enable mods in the correct priority order
         for i, mod in enumerate(self.cfg["mod_priority"]):
             if enabled_mods.get(mod, False):
-                Util.enable_mod(mod, self.cfg, i)
+                Util.enable_mod_with_ui(mod, self.cfg, i, self)
 
         self._update_treeview()
         print("Refreshed")
@@ -189,10 +190,6 @@ class CrossPatchWindow(TkinterDnD.Tk):
         self.tk.call('source', os.path.join(asset_path, 'themes', 'azure', 'azure.tcl'))
         self.tk.call('set_theme', 'dark')
 
-        if platform.system() == "Windows":
-            icon_path = os.path.join(asset_path, "CrossP.ico")
-            self.iconbitmap(icon_path)
-        
         self.cfg  = Config.config
         self.geometry(self.cfg.get("window_size", "580x700"))
         self.resizable(True, True)
@@ -269,23 +266,33 @@ class CrossPatchWindow(TkinterDnD.Tk):
         self.refresh()
         btn_frame = ttk.Frame(self, padding=8)
         btn_frame.pack(fill=tk.X)
-        # Magnifying glass button
-        mag_btn = ttk.Button(
-            btn_frame, text="🔍", width=3,
-            command=self.toggle_search_bar
-        )
-        mag_btn.pack(side=tk.RIGHT, padx=5)
+        # Settings button
         settings_btn = ttk.Button(
             btn_frame, text="⚙", width=3,
             command=self.open_settings
         )
         settings_btn.pack(side=tk.RIGHT, padx=5)
-        ttk.Button(btn_frame, text="Check for Updates",
-                  command=self.check_all_mod_updates).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Add Mod from URL",
-                  command=self.add_mod_from_url).pack(side=tk.LEFT, padx=5)
+        # Search button
+        search_btn = ttk.Button(
+            btn_frame, text="🔍", width=3,
+            command=self.toggle_search_bar
+        )
+        search_btn.pack(side=tk.RIGHT, padx=5)
+
+        # Load GameBanana icon for the "Add Mod" button
+        try:
+            gb_icon_path = os.path.join(asset_path, "gb_icon.png")
+            self.gb_icon = tk.PhotoImage(file=gb_icon_path).subsample(2, 2) # Adjust subsample as needed for icon size
+            add_mod_compound = tk.LEFT
+        except tk.TclError:
+            print("Could not load gb_icon.png. Button will be text-only.")
+            self.gb_icon = None
+            add_mod_compound = tk.NONE
+
         ttk.Button(btn_frame, text="Refresh Mods",
                   command=self.refresh).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Add Mod from URL", image=self.gb_icon,
+                  compound=add_mod_compound, command=self.add_mod_from_url).pack(side=tk.LEFT, padx=5)
         ttk.Label(self, text=f"CrossPatch {APP_VERSION}",
                   font=("Segoe UI", 8)).pack(pady=(0,8))
 
@@ -293,8 +300,32 @@ class CrossPatchWindow(TkinterDnD.Tk):
         launch_btn = ttk.Button(self, text="Launch Game", command=self.launch_game)
         launch_btn.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 8))
 
+        # --- Final Window Setup ---
+        # Set the icon and center the window before showing it.
+        if platform.system() == "Windows":
+            icon_path = os.path.join(asset_path, "CrossP.ico")
+            self.iconbitmap(icon_path)
+
+        # This needs to run before deiconify to prevent a white flash.
+        self.update_idletasks()
         Util.center_window(self)
+
+        # Show the window.
         self.deiconify()
+
+        # Set dark title bar on Windows after the window is visible and has a handle.
+        if platform.system() == "Windows":
+            try:
+                hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+                DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+                value = ctypes.c_int(1) # 1 for True/dark
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                    ctypes.byref(value), ctypes.sizeof(value)
+                )
+            except Exception as e:
+                print(f"Could not set dark title bar: {e}")
+
         self.grab_set()
         # Drag and drop support
         self.tree.drop_target_register(DND_FILES)

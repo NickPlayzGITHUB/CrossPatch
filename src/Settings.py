@@ -10,6 +10,7 @@ class SettingsWindow(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
 
+        self.parent = parent
         self.config = Config.config
 
         self.withdraw()
@@ -35,11 +36,18 @@ class SettingsWindow(tk.Toplevel):
         pick_btn = ttk.Button(frame, text="...", width=3, command=self.on_change_game_root)
         pick_btn.grid(row=1, column=2, sticky="e", padx=(5,0))
         frame.columnconfigure(1, weight=1)
-        ttk.Button(frame, text="Credits", command=lambda: self.open_credits())\
-        .grid(row=2, column=0, columnspan=3, pady=(12,0))
+
+        # Button frame at the bottom
+        btn_frame = ttk.Frame(frame)
+        # Align the frame to the left of its grid cell
+        btn_frame.grid(row=2, column=0, columnspan=3, pady=(12,0), sticky="w")
+        
+        # Pack buttons vertically (default side=TOP) and align them left (anchor=w)
+        ttk.Button(btn_frame, text="Check for Mod Updates", command=self.on_check_mod_updates).pack(anchor="w")
+        ttk.Button(btn_frame, text="Credits", command=lambda: self.open_credits()).pack(anchor="w", pady=(5, 0))
 
         self.title("Settings")
-        self.geometry("500x120")
+        self.geometry("500x180")
         self.resizable(False, False)
         self.update_idletasks()
         Util.center_window(self)
@@ -47,6 +55,9 @@ class SettingsWindow(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
 
+
+    def on_check_mod_updates(self):
+        self.parent.check_all_mod_updates()
 
     def open_credits(self):
         CreditsWindow(self)

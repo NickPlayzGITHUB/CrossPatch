@@ -6,10 +6,27 @@ import urllib.request
 import webbrowser
 import platform
 import re
+import tkinter as tk
+from tkinter import messagebox
 
 from UpdatePrompt import UpdatePromptWindow
 
 from Constants import UPDATE_URL, APP_VERSION
+from DownloadManager import DownloadManager
+from Config import CONFIG_DIR
+
+# --- Handle optional archive dependencies for UE4SS install ---
+try:
+    import py7zr
+    PY7ZR_SUPPORT = True
+except ImportError:
+    PY7ZR_SUPPORT = False
+
+try:
+    import rarfile
+    RARFILE_SUPPORT = True
+except ImportError:
+    RARFILE_SUPPORT = False
 
 '''
 Code from:
@@ -206,11 +223,51 @@ def launch_game():
     print("Opening Crossworlds...")
 
 
+def _ensure_ue4ss_installed(cfg, root_window):
+    """Checks if UE4SS is installed and installs it if not."""
+    win64_path = os.path.join(cfg["game_root"], "UNION", "Binaries", "Win64")
+    ue4ss_folder = os.path.join(win64_path, "ue4ss")
+    dwmapi_dll = os.path.join(win64_path, "dwmapi.dll")
+
+    if os.path.isdir(ue4ss_folder) and os.path.exists(dwmapi_dll):
+        print("UE4SS is already installed.")
+        return True # UE4SS is present
+
+    # UE4SS is not installed, so we need to download it.
+    if not messagebox.askyesno(
+        "UE4SS Not Found",
+        "A UE4SS-based mod requires UE4SS to be installed.\n\n"
+        "CrossPatch can automatically download and install it for you. "
+        "Do you want to proceed?",
+        parent=root_window
+    ):
+        messagebox.showwarning("Mod Not Enabled", "The mod was not enabled because UE4SS is required.", parent=root_window)
+        return False
+
+    ue4ss_url = "https://gamebanana.com/tools/20876"
+    print(f"UE4SS not found. Downloading from {ue4ss_url}")
+
+    # We can use a temporary DownloadManager for this one-off task.
+    # We'll use a temporary folder for the download to keep things clean.
+    temp_download_dir = os.path.join(CONFIG_DIR, "temp_downloads")
+    os.makedirs(temp_download_dir, exist_ok=True)
+    
+    try:
+        dm = DownloadManager(root_window, temp_download_dir)
+        # This is a synchronous call for simplicity, as the mod can't be enabled until this is done.
+        dm.download_and_extract_to(ue4ss_url, win64_path)
+        print("UE4SS installation completed.")
+        shutil.rmtree(temp_download_dir, ignore_errors=True)
+        return True
+    except Exception as e:
+        messagebox.showerror("UE4SS Installation Failed", f"Failed to download or install UE4SS. The mod will not be enabled.\n\nError: {e}", parent=root_window)
+        shutil.rmtree(temp_download_dir, ignore_errors=True)
+        return False
+
 def enable_mod(mod_name, cfg, priority):
     mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
     mod_type = mod_info.get("mod_type", "pak") # Default to 'pak' if not specified
 
-    print(f"Enabling {mod_name} (type: {mod_type}) with priority {priority}")
     src = os.path.join(cfg["mods_folder"], mod_name)
 
     if mod_type == "ue4ss-script":
@@ -243,3 +300,18 @@ def enable_mod(mod_name, cfg, priority):
                 )
 
     cfg["enabled_mods"][mod_name] = True
+
+def enable_mod_with_ui(mod_name, cfg, priority, root_window):
+    """Wrapper for enable_mod that handles UI interactions like the UE4SS check."""
+    mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
+    mod_type = mod_info.get("mod_type", "pak")
+
+    # If it's a UE4SS mod, ensure UE4SS is installed first.
+    if mod_type.startswith("ue4ss"):
+        if not _ensure_ue4ss_installed(cfg, root_window):
+            # User cancelled or installation failed, so we abort enabling this mod.
+            cfg["enabled_mods"][mod_name] = False # Ensure it's marked as disabled
+            return
+
+    print(f"Enabling {mod_name} (type: {mod_type}) with priority {priority}")
+    enable_mod(mod_name, cfg, priority)
