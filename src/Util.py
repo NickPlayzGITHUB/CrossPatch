@@ -16,14 +16,15 @@ Code from:
 https://coderslegacy.com/tkinter-center-window-on-screen/
 '''
 def center_window(root):
-    root.update_idletasks()
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
+    if platform.system() == "Windows":
+        root.update_idletasks()
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
  
-    x = (screen_width/2) - (root.winfo_width()/2)
-    y = (screen_height/2) - (root.winfo_height()/2)
+        x = (screen_width/2) - (root.winfo_width()/2)
+        y = (screen_height/2) - (root.winfo_height()/2)
  
-    root.geometry('%dx%d+%d+%d' % (root.winfo_width(), root.winfo_height(), x, y))
+        root.geometry('%dx%d+%d+%d' % (root.winfo_width(), root.winfo_height(), x, y))
 
 def fetch_remote_version():
     print("Fetching version.txt")
