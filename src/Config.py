@@ -33,7 +33,7 @@ def default_mods_folder():
     
     root = Tk()
     root.withdraw()
-    messagebox.showinfo("Welcome to CrossPatch!", "Please select a folder to store your mods.", parent=root)
+    messagebox.showinfo("Welcome to CrossPatch!", "Please select a folder to store your mods.\n Note: this is NOT your ~mods folder", parent=root)
     folder = filedialog.askdirectory(title="Select a folder for your mods", parent=root)
     root.destroy()
     if not folder:
