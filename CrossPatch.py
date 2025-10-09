@@ -633,18 +633,17 @@ class CrossPatchMain:
             response = requests.get(api_url, headers=headers)
             print(f"Response status code: {response.status_code}")
             print(f"Response headers: {response.headers}")
-            print(f"Response content: {response.text[:200]}...")  # Print first 200 chars
+            print(f"Response content: {response.text[:200]}...")  
             
             response.raise_for_status()
             
             try:
                 item_data = response.json()
                 print(f"Parsed JSON data: {item_data}")
-                
-                # Get the version
+    
                 gb_version = item_data.get("_sVersion")
                 if not gb_version:
-                    messagebox.showwarning("Update Check", "Could not find _sVersion in API response")
+                    messagebox.showwarning("Update Check", "No updates found")
                     return
                     
                 print(f"Found version: {gb_version}")
