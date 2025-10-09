@@ -32,6 +32,21 @@ except ImportError:
 try:
     import rarfile
     RARFILE_SUPPORT = True
+    if platform.system() == "Windows":
+        # --- Point rarfile to the bundled UnRAR.exe on Windows ---
+        if getattr(sys, 'frozen', False):
+            # Packaged app: UnRAR.exe is in the 'assets' folder next to the executable
+            unrar_path = os.path.join(os.path.dirname(sys.executable), 'assets', 'UnRAR.exe')
+        else:
+            # Development: UnRAR.exe is in the 'assets' folder in the project root
+            unrar_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'UnRAR.exe')
+        
+        if os.path.exists(unrar_path):
+            rarfile.UNRAR_TOOL = unrar_path
+            print(f"Found bundled UnRAR at: {unrar_path}")
+        else:
+            print("Bundled UnRAR.exe not found, falling back to system PATH.")
+    # On Linux/macOS, rarfile will look for 'unrar' in the system PATH.
 except ImportError:
     RARFILE_SUPPORT = False
 class CrossPatchWindow(TkinterDnD.Tk):
@@ -53,8 +68,23 @@ class CrossPatchWindow(TkinterDnD.Tk):
                     dest_path = os.path.join(self.cfg["mods_folder"], mod_name)
                     if not os.path.exists(dest_path):
                         dm._extract_archive(file_path, dest_path)
-            except rarfile.RarCannotExec as e:
-                messagebox.showerror("Error Adding Mod", f"Failed to extract RAR file. Please ensure the 'unrar' utility is installed and accessible in your system's PATH.\n\nDetails: {e}")
+            except rarfile.RarCannotExec:
+                if platform.system() == "Linux":
+                    messagebox.showerror(
+                        "RAR Extraction Failed",
+                        "To extract .rar files, please install the 'unrar' package using your distribution's package manager.\n\n"
+                        "For Debian/Ubuntu: sudo apt-get install unrar\n"
+                        "For Fedora: sudo dnf install unrar"
+                    )
+                else: # Windows or other
+                    import webbrowser
+                    if messagebox.askyesno(
+                        "RAR Extraction Failed",
+                        "Extracting .rar files requires the 'unrar' utility, which was not found.\n\n"
+                        "The bundled version may be missing or corrupted. Would you like to open the official download page?",
+                        icon='warning'
+                    ):
+                        webbrowser.open("https://www.rarlab.com/rar_add.htm")
             except Exception as e:
                 messagebox.showerror("Error Adding Mod", f"Failed to add '{os.path.basename(file_path)}':\n{e}")
 
