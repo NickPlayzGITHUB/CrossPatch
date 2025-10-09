@@ -392,18 +392,19 @@ class CrossPatchWindow(TkinterDnD.Tk):
         # Add protocol for saving window size on close
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+        # Start listening for connections from other instances (for one-click installs)
+        if self.instance_socket:
+            threading.Thread(target=self._socket_listener, daemon=True).start()
+
     def on_closing(self):
         """Saves window size and closes the application."""
         self.cfg["window_size"] = self.geometry()
         Config.save_config(self.cfg)
         self.destroy()
-        # Start listening for connections from other instances
-        if self.instance_socket:
-            self.instance_socket.listen(1)
-            threading.Thread(target=self._socket_listener, daemon=True).start()
 
     def _socket_listener(self):
         """Listens for incoming connections on the instance socket."""
+        self.instance_socket.listen(1)
         while True:
             try:
                 conn, addr = self.instance_socket.accept()
