@@ -1,5 +1,6 @@
 import os
 import json
+import requests
 import shutil
 import subprocess
 import urllib.request
@@ -42,6 +43,50 @@ def center_window(root):
         y = (screen_height/2) - (root.winfo_height()/2)
  
         root.geometry('%dx%d+%d+%d' % (root.winfo_width(), root.winfo_height(), x, y))
+
+def get_gb_item_details_from_url(url):
+    """
+    Extracts the item type (e.g., 'mods', 'sounds') and ID from a GameBanana URL.
+    Returns a tuple (item_type, item_id) or (None, None).
+    """
+    valid_types = ["mods", "wips", "sounds", "sprays", "maps", "guis", "tools"]
+    parts = url.split('/')
+    
+    for i, part in enumerate(parts):
+        if part in valid_types:
+            if i + 1 < len(parts) and parts[i+1].isdigit():
+                return (part, parts[i+1]) # Returns plural form, e.g. ('sounds', '82487')
+
+    return (None, None)
+
+def get_gb_item_name(item_type, item_id):
+    """Fetches an item's name from the GameBanana API using its type and ID."""
+    if not item_type or not item_id:
+        raise ValueError("Invalid item type or ID provided.")
+
+    # API expects singular, capitalized type (e.g., "Mod", "Sound")
+    api_item_type = item_type.rstrip('s').capitalize()
+    api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName"
+    
+    try:
+        response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.8'}, timeout=5)
+        response.raise_for_status()
+        item_data = response.json()
+        name = item_data.get('_sName')
+        if not name:
+            raise ValueError("Could not find item name in API response.")
+        return name
+    except requests.RequestException as e:
+        raise ConnectionError(f"Could not connect to GameBanana API: {e}")
+    except (json.JSONDecodeError, ValueError) as e:
+        raise ValueError(f"Could not parse API response or find name: {e}")
+
+def get_gb_item_name_from_url(url):
+    """Convenience function to get an item's name directly from its page URL."""
+    item_type, item_id = get_gb_item_details_from_url(url)
+    if not item_type or not item_id:
+        raise ValueError("Could not extract valid item details from the URL.")
+    return get_gb_item_name(item_type, item_id)
 
 def fetch_remote_version():
     print("Fetching version.txt")

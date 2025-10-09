@@ -34,81 +34,10 @@ class DownloadManager:
     def download_and_extract_to(self, url, extract_destination):
         """Synchronously downloads and extracts an archive to a specific destination."""
         self._download_thread(url, extract_destination)
-
-    def _download_thread(self, mod_url):
-        try:
-            # 1. Get Mod Info from GameBanana API
-            item_type, item_id = self._get_item_details_from_url(mod_url)
-            if not item_type or not item_id:
-                raise ValueError("Could not extract a valid item type and ID from the URL.")
-
-            # Convert plural item type (e.g., "sounds") to singular and capitalized (e.g., "Sound") for the API.
-            api_item_type = item_type.rstrip('s').capitalize()
-
-            api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles"
-            response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.8'})
-            response.raise_for_status()
-            mod_data = response.json()
-
-            # 2. Find the download file
-            files = mod_data.get('_aFiles')
-            if not files:
-                raise ValueError("No files found for this mod in the API response.")
-            
-            # Simplistic approach: find the biggest file to download.
-            # A more robust solution might check for specific filenames.
-            best_file = max(files, key=lambda f: f.get('_nFilesize', 0))
-            download_url = best_file.get('_sDownloadUrl')
-            file_name = best_file.get('_sFile')
-            mod_name = mod_data.get('_sName').replace(" ", "") # Basic name sanitization
-
-            if not download_url:
-                raise ValueError("Could not find a download URL for the primary file.")
-
-            # 3. Download the file with progress
-            self._show_progress_window(f"Downloading {mod_name}...", file_name)
-            
-            temp_archive_path = os.path.join(self.mods_folder, file_name)
-            
-            with requests.get(download_url, stream=True) as r:
-                r.raise_for_status()
-                total_size = int(r.headers.get('content-length', 0))
-                bytes_downloaded = 0
-                with open(temp_archive_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-                        bytes_downloaded += len(chunk)
-                        if total_size > 0:
-                            progress = (bytes_downloaded / total_size) * 100
-                            self.progress_var.set(progress)
-                            self.progress_label_var.set(f"{bytes_downloaded/1024/1024:.2f} MB / {total_size/1024/1024:.2f} MB")
-                            self.progress_window.update_idletasks()
-
-            # 3.5 Security Scan
-            self.progress_label_var.set("Scanning for unsafe files...")
-            if not self._security_scan(temp_archive_path):
-                # User cancelled the installation
-                raise InterruptedError("Installation cancelled by user due to security warning.")
-
-            # 4. Extract the archive
-            self.progress_label_var.set("Extracting...")
-            extract_path = os.path.join(self.mods_folder, mod_name)
-            self._extract_archive(temp_archive_path, extract_path)
-
-            # 5. Clean up
-            os.remove(temp_archive_path)
-            self.progress_window.destroy()
-
-            if self.on_complete:
-                self.parent.after(0, self.on_complete)
-
-        except InterruptedError as e:
-            # Handle user cancellation gracefully
-            print(e)
-        except Exception as e:
-            if hasattr(self, 'progress_window'):
-                self.progress_window.destroy()
-            messagebox.showerror("Download Failed", f"An error occurred: {e}")
+    
+    def download_from_schema(self, download_url, item_type, item_id, file_ext):
+        """Starts a download thread using information from a URL schema."""
+        threading.Thread(target=self._schema_download_thread, args=(download_url, item_type, item_id, file_ext), daemon=True).start()
 
     def _download_thread(self, url, extract_override=None):
         """
@@ -117,8 +46,8 @@ class DownloadManager:
         Otherwise, it extracts to the standard mods_folder.
         """
         try:
-            # 1. Get Item Info from GameBanana API
-            item_type, item_id = self._get_item_details_from_url(url)
+            # 1. Get Item Info from GameBanana API from a page URL
+            item_type, item_id = Util.get_gb_item_details_from_url(url)
             if not item_type or not item_id:
                 raise ValueError("Could not extract a valid item type and ID from the URL.")
 
@@ -146,6 +75,12 @@ class DownloadManager:
             temp_archive_path = os.path.join(self.mods_folder, file_name) # Always download to a temp location
             self._download_file_with_progress(download_url, temp_archive_path)
 
+            # 3.5 Security Scan
+            self.progress_label_var.set("Scanning for unsafe files...")
+            if not self._security_scan(temp_archive_path):
+                # User cancelled the installation
+                raise InterruptedError("Installation cancelled by user due to security warning.")
+
             # 4. Extract the archive
             self.progress_label_var.set("Extracting...")
             extract_path = extract_override if extract_override else os.path.join(self.mods_folder, item_name)
@@ -158,6 +93,11 @@ class DownloadManager:
             if not extract_override and self.on_complete:
                 self.parent.after(0, self.on_complete)
 
+        except InterruptedError as e:
+            # Handle user cancellation gracefully
+            print(e)
+            if 'temp_archive_path' in locals() and os.path.exists(temp_archive_path):
+                os.remove(temp_archive_path)
         except Exception as e:
             if hasattr(self, 'progress_window') and self.progress_window.winfo_exists():
                 self.progress_window.destroy()
@@ -165,21 +105,55 @@ class DownloadManager:
             if extract_override:
                 raise e
             messagebox.showerror("Download Failed", f"An error occurred: {e}")
-    def _get_item_details_from_url(self, url):
-        """
-        Extracts the item type (e.g., 'Mod', 'Sound') and ID from a GameBanana URL.
-        Returns a tuple (item_type, item_id) or (None, None).
-        """
-        # A list of valid GameBanana item types in their plural URL form.
-        valid_types = ["mods", "wips", "sounds", "sprays", "maps", "guis", "tools"]
-        parts = url.split('/')
-        
-        for i, part in enumerate(parts):
-            if part in valid_types:
-                if i + 1 < len(parts) and parts[i+1].isdigit():
-                    return (part, parts[i+1]) # Returns plural form, e.g. ('sounds', '82487')
 
-        return (None, None)
+    def _schema_download_thread(self, download_url, item_type, item_id, file_ext):
+        """
+        Handles a download where the URL, type, and ID are already known from the protocol schema.
+        This is more direct and avoids an extra API call to get the item name.
+        """
+        temp_archive_path = None
+        try:
+            # 1. Get Item Name from GameBanana API (we still need this for the folder name)
+            api_item_type = item_type.capitalize()
+            api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName"
+            response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.8'})
+            response.raise_for_status()
+            item_data = response.json()
+            item_name = item_data.get('_sName', f"mod_{item_id}").replace(" ", "")
+
+            # The download URL from the schema might not have a clear filename.
+            # We'll create a temporary one using the provided file extension.
+            file_name = f"{item_name}_download.{file_ext}"
+
+            # 2. Download the file with progress
+            self._show_progress_window(f"Downloading {item_name}...", file_name)
+            temp_archive_path = os.path.join(self.mods_folder, file_name)
+            self._download_file_with_progress(download_url, temp_archive_path)
+
+            # 3. Security Scan
+            self.progress_label_var.set("Scanning for unsafe files...")
+            if not self._security_scan(temp_archive_path):
+                raise InterruptedError("Installation cancelled by user due to security warning.")
+
+            # 4. Extract the archive
+            self.progress_label_var.set("Extracting...")
+            extract_path = os.path.join(self.mods_folder, item_name)
+            self._extract_archive(temp_archive_path, extract_path)
+
+            # 5. Clean up
+            os.remove(temp_archive_path)
+            self.progress_window.destroy()
+
+            if self.on_complete:
+                self.parent.after(0, self.on_complete)
+
+        except (InterruptedError, Exception) as e:
+            if temp_archive_path and os.path.exists(temp_archive_path):
+                os.remove(temp_archive_path)
+            if hasattr(self, 'progress_window') and self.progress_window.winfo_exists():
+                self.progress_window.destroy()
+            if not isinstance(e, InterruptedError):
+                messagebox.showerror("Download Failed", f"An error occurred: {e}")
 
     def _show_progress_window(self, title, file_name):
         self.progress_window = tk.Toplevel(self.parent)
