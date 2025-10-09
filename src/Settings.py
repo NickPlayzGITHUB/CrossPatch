@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog
 import os
+import platform
 
 import Util
 from Credits import CreditsWindow
@@ -27,7 +28,8 @@ class SettingsWindow(tk.Toplevel):
             variable=self.show_logs_var,
             command=self.on_toggle_logs
         )
-        chk.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,8))
+        if platform.system() == "Windows":
+            chk.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,8))
 
         ttk.Label(frame, text="Game Directory:").grid(row=1, column=0, sticky="w")
         self.game_root_var = tk.StringVar(value=self.config["game_root"])
@@ -54,7 +56,10 @@ class SettingsWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="Credits", command=lambda: self.open_credits()).pack(anchor="w", pady=(5, 0))
 
         self.title("Settings")
-        self.geometry("500x220")
+        if platform.system() == "Windows":
+            self.geometry("500x250")
+        else:
+            self.geometry("500x210")
         self.resizable(False, False)
         self.update_idletasks()
         Util.center_window(self)
