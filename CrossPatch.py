@@ -640,8 +640,7 @@ class CrossPatchMain:
             try:
                 item_data = response.json()
                 print(f"Parsed JSON data: {item_data}")
-                
-                # Get the version
+    
                 gb_version = item_data.get("_sVersion")
                 if not gb_version:
                     messagebox.showwarning("Update Check", "Could not find _sVersion in API response")
