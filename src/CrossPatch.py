@@ -63,18 +63,64 @@ class CrossPatchWindow(TkinterDnD.Tk):
     def add_mod_from_url(self):
         from tkinter.simpledialog import askstring
         url = askstring("Add Mod from URL", "Enter the GameBanana Mod URL:", parent=self)
-        if url and "gamebanana.com" in url:
+        if not url or "gamebanana.com" not in url:
+            if url: # If user entered something, but it's not a GB link
+                messagebox.showwarning("Invalid URL", "Please enter a valid GameBanana mod URL.")
+            return
+
+        try:
+            mod_name = Util.get_gb_item_name_from_url(url)
+            if not messagebox.askyesno(
+                "Confirm Download",
+                f"Do you want to download this mod?\n\n{mod_name}",
+                parent=self
+            ):
+                print("User cancelled download.")
+                return
             dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
             dm.download_mod_from_url(url)
-        elif url:
-            messagebox.showwarning("Invalid URL", "Please enter a valid GameBanana mod URL.")
+        except Exception as e:
+            messagebox.showerror("Download Error", f"Could not get mod details.\n\n{e}")
 
     def handle_protocol_url(self, url):
         """Handles a URL passed via the custom protocol (e.g., from another instance)."""
         print(f"Received URL from protocol: {url}")
-        # The URL will be like "crosspatch://install?url=https://gamebanana.com/mods/12345"
-        if url.startswith("crosspatch://install?url="):
+        
+        # New schema format: crosspatch:[URL_TO_ARCHIVE],[MOD_TYPE],[MOD_ID],[FILE_EXTENSION]
+        if url.startswith("crosspatch:") and "," in url:
+            try:
+                # Remove protocol prefix and split the parts
+                parts_str = url.replace("crosspatch:", "")
+                parts = parts_str.split(',')
+                
+                download_url = parts[0]
+                item_type = parts[1] # e.g., "Mod" or "Sound"
+                item_id = parts[2]
+                file_ext = parts[3] if len(parts) > 3 else 'zip' # Assume zip if not provided
+
+                mod_name = Util.get_gb_item_name(item_type, item_id)
+                if not messagebox.askyesno(
+                    "Confirm Download",
+                    f"Do you want to download this mod?\n\n{mod_name}",
+                    parent=self
+                ):
+                    print("User cancelled download.")
+                    return
+                dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
+                dm.download_from_schema(download_url, item_type, item_id, file_ext)
+
+            except (IndexError, ValueError) as e:
+                messagebox.showerror("Download Error", f"Could not parse the received URL. It may be malformed.\n\nDetails: {e}")
+        elif url.startswith("crosspatch://install?url="): # Fallback for simple URL format
             gb_url = url.replace("crosspatch://install?url=", "")
+            mod_name = Util.get_gb_item_name_from_url(gb_url)
+            if not messagebox.askyesno(
+                "Confirm Download",
+                f"Do you want to download this mod?\n\n{mod_name}",
+                parent=self
+            ):
+                print("User cancelled download.")
+                return
             dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
             dm.download_mod_from_url(gb_url)
 
