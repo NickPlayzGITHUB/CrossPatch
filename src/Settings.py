@@ -57,9 +57,9 @@ class SettingsWindow(tk.Toplevel):
 
         self.title("Settings")
         if platform.system() == "Windows":
-            self.geometry("500x250")
-        else:
             self.geometry("500x210")
+        else:
+            self.geometry("500x250")
         self.resizable(False, False)
         self.update_idletasks()
         Util.center_window(self)
