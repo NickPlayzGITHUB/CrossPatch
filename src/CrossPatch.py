@@ -212,6 +212,15 @@ class CrossPatchWindow(TkinterDnD.Tk):
         conflicts = {}
         for mod in enabled_mods:
             mod_path = os.path.join(mods_folder, mod)
+
+            # Read mod info to check its type
+            mod_info = Util.read_mod_info(mod_path)
+            mod_type = mod_info.get("mod_type", "pak")
+
+            # Skip conflict detection for UE4SS mods
+            if mod_type.startswith("ue4ss"):
+                continue
+
             for root, _, files in os.walk(mod_path):
                 for f in files:
                     if f.lower() == "info.json":

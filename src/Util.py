@@ -12,7 +12,7 @@ from tkinter import messagebox
 
 from UpdatePrompt import UpdatePromptWindow
 
-from Constants import UPDATE_URL, APP_VERSION
+from Constants import UPDATE_URL, APP_VERSION, STEAM_APP_ID
 from DownloadManager import DownloadManager
 from Config import CONFIG_DIR
 
@@ -69,7 +69,7 @@ def get_gb_item_name(item_type, item_id):
     api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName"
     
     try:
-        response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.8'}, timeout=5)
+        response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.9'}, timeout=5)
         response.raise_for_status()
         item_data = response.json()
         name = item_data.get('_sName')
@@ -262,9 +262,9 @@ def launch_game():
     if platform.system() == "Windows":
         print(
             f"Attempting to launch Sonic Racing CrossWorlds...")  # Removed the EXE check since too many people were having issues, idk why that was even a thing after I made the game launch from steam instead of the exe
-        webbrowser.open("steam://run/2486820")
+        webbrowser.open(f"steam://run/{STEAM_APP_ID}")
     elif platform.system() == "Linux":
-        subprocess.Popen(["steam", "steam://rungameid/2486820"])
+        subprocess.Popen(["steam", f"steam://rungameid/{STEAM_APP_ID}"])
     print("Opening Crossworlds...")
 
 
