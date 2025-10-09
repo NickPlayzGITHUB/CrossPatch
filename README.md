@@ -8,10 +8,10 @@ While most of it is human there's also a lot of AI code, because this program ne
 CrossPatch is an easy to use mod manager for Sonic Racing: Crossworlds
 
 ## Features:
-- Automatic Game Detection (and custom directory support if it can't find the game)
+- Automatic Game Detection
 - Automatic folder creation, no need to set up your ~mods folder in the game files
-- Supports ALL Pak mods, even if they don't support CrossPatch
-- For mods that do support Crosspatch, there's support for custom mod display names, authors, version numbers, etc.
+- Supports both Pak and UE4SS mods
+- Support for custom mod display names, authors, version numbers, updating etc.
 - Simple, Clean, and easy to use UI
 - Ability to launch the game via CrossPatch
 - Functions on both Windows and Linux
@@ -29,6 +29,7 @@ Below is a template you can use. The `mod_type` field is optional and defaults t
   "name": "YOUR MOD NAME",
   "version": "1.0",
   "author": "Your Name",
+  "mod_page": "gamebanana.com",
   "mod_type": "pak" 
 }
 ```
