@@ -187,7 +187,7 @@ class DownloadManager:
         self.progress_window.title(title)
         self.progress_window.resizable(False, False)
 
-        ttk.Label(self.progress_window, text=f"File: {file_name}", padding=10).pack()
+        ttk.Label(self.progress_window, text=f"Downloading {file_name}", padding=10).pack()
         
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(self.progress_window, variable=self.progress_var, length=300, mode='determinate')

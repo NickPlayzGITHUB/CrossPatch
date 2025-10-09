@@ -16,6 +16,11 @@ class CreditsWindow(tk.Toplevel):
             .pack(anchor="center", pady=(0,4))
         ttk.Label(frame, text="Lead Developer/Programmer", font=("Segoe UI", 10))\
             .pack(anchor="center", pady=(0,12))
+        
+        ttk.Label(frame, text="RED1", font=("Segoe UI", 16, "bold"))\
+            .pack(anchor="center", pady=(0,4))
+        ttk.Label(frame, text="Secondary Main Programmer", font=("Segoe UI", 10))\
+            .pack(anchor="center", pady=(0,12))
 
         ttk.Label(frame, text="AntiApple4life", font=("Segoe UI", 16, "bold"))\
             .pack(anchor="center", pady=(0,4))
@@ -24,13 +29,9 @@ class CreditsWindow(tk.Toplevel):
         
         ttk.Label(frame, text="Ben Thalmann", font=("Segoe UI", 16, "bold"))\
             .pack(anchor="center", pady=(0,4))
-        ttk.Label(frame, text="Codebase Janitor ;)", font=("Segoe UI", 10))\
+        ttk.Label(frame, text="Cleaned Up Codebase", font=("Segoe UI", 10))\
             .pack(anchor="center", pady=(0,12))
         
-        ttk.Label(frame, text="RED1", font=("Segoe UI", 16, "bold"))\
-            .pack(anchor="center", pady=(0,4))
-        ttk.Label(frame, text="Who invited this guy?", font=("Segoe UI", 10))\
-            .pack(anchor="center", pady=(0,12))
 
         ttk.Button(frame, text="Close", command=self.destroy)\
             .pack(pady=(20,0))
