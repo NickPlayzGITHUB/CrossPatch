@@ -16,6 +16,12 @@ CrossPatch is an easy to use mod manager for Sonic Racing: Crossworlds
 - Ability to launch the game via CrossPatch
 - Functions on both Windows and Linux
 
+### Archive Support
+CrossPatch supports extracting `.zip`, `.7z`, and `.rar` archives.
+- **.zip**: Supported out-of-the-box.
+- **.7z**: Supported via the `py7zr` Python package.
+- **.rar**: On Windows, the required `UnRAR.exe` is bundled with the application. On Linux, you must install the `unrar` package through your distribution's package manager (e.g., `sudo apt install unrar` or `sudo dnf install unrar`).
+
 ## Misc Info
 
 It is HIGHLY reccomended that you run CrossPatch as an Admin or you are a Local Admin on your device. Not being an admin can inhibit CrossPatch from setting up your mods correctly and cause issues.
