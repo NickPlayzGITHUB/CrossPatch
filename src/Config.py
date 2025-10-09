@@ -3,6 +3,7 @@ import os
 import json
 import sys
 import ctypes
+import re
 if platform.system() == "Windows": import winreg
 from tkinter import filedialog, messagebox, Tk
 
@@ -40,6 +41,37 @@ def default_mods_folder():
         sys.exit("No mods folder selected. Exiting.")
     return folder
 
+def default_game_folder():
+    """Tries to auto-detect the game folder, and prompts the user if it fails."""
+    default_root = ""
+    detected = False
+    if platform.system() == "Windows":
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\\Valve\\Steam") as key:
+                steam_path = winreg.QueryValueEx(key, "SteamPath")[0]
+                default_root = _find_game_in_steam_libraries(steam_path)
+                detected = bool(default_root)
+        except FileNotFoundError:
+            print("Steam registry key not found.")
+    elif platform.system() == "Linux":
+        # This path is still a guess, but it's a common one.
+        linux_path = os.path.join(os.path.expanduser("~"), ".local", "share", "Steam", "steamapps", "common", "SonicRacingCrossWorlds")
+        if os.path.isdir(linux_path):
+            default_root = linux_path
+            detected = True
+
+    if not default_root:
+        # Auto-detection failed, prompt the user.
+        root = Tk()
+        root.withdraw()
+        messagebox.showinfo("Setup: Game Directory", "Could not automatically find Sonic Racing Crossworlds. Please select the game's installation folder.", parent=root)
+        folder = filedialog.askdirectory(title="Select Sonic Racing Crossworlds Folder", parent=root)
+        root.destroy()
+        if not folder:
+            sys.exit("No game folder selected. Exiting.")
+        default_root = folder
+    return default_root, detected
+
 _original_stdout = sys.stdout
 _original_stderr = sys.stderr
 _console_streams = None
@@ -76,23 +108,48 @@ def hide_console():
     except Exception as e:
         print(f"Failed to hide console: {e}")
 
-def load_config():
-    default_root = ""
-    steam_path = ""
-    detected = False
-    if platform.system() == "Windows":
+def _find_game_in_steam_libraries(steam_path, app_id="2486820"):
+    """Parses Steam's library file to find the game in any library folder."""
+    library_folders_vdf = os.path.join(steam_path, "steamapps", "libraryfolders.vdf")
+    app_manifest_file = f"appmanifest_{app_id}.acf"
+    
+    # List of all potential library paths, starting with the main one
+    library_paths = [steam_path]
+
+    if os.path.exists(library_folders_vdf):
         try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\\Valve\\Steam") as key:
-                steam_path = winreg.QueryValueEx(key, "SteamPath")[0]
-                detected = True
-        except Exception:
-            steam_path = r"C:\Program Files (x86)\Steam"
-        default_root = os.path.join(steam_path, "steamapps", "common", "SonicRacingCrossWorlds")
-    elif platform.system() == "Linux":
-        default_root = os.path.join(os.path.expanduser("~"), ".local", "share", "Steam", "steamapps", "common",
-                                    "SonicRacingCrossWorlds")
-    default_mods = os.path.join(default_root, "UNION", "Content", "Paks", "~mods")
-    os.makedirs(default_mods, exist_ok=True)
+            with open(library_folders_vdf, "r", encoding="utf-8") as f:
+                # This regex finds all "path" values in the VDF file
+                found_paths = re.findall(r'"path"\s+"([^"]+)"', f.read())
+                for path in found_paths:
+                    library_paths.append(path.replace("\\\\", "\\"))
+        except Exception as e:
+            print(f"Could not parse libraryfolders.vdf: {e}")
+
+    # Now, search for the appmanifest file in each library
+    for library_path in library_paths:
+        manifest_path = os.path.join(library_path, "steamapps", app_manifest_file)
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    # Find the "installdir" value
+                    match = re.search(r'"installdir"\s+"([^"]+)"', content)
+                    if match:
+                        game_folder_name = match.group(1)
+                        game_path = os.path.join(library_path, "steamapps", "common", game_folder_name)
+                        if os.path.isdir(game_path):
+                            print(f"Found game at: {game_path}")
+                            return game_path
+            except Exception as e:
+                print(f"Error reading manifest file {manifest_path}: {e}")
+    
+    print("Game not found in any Steam library.")
+    return "" # Return empty if not found
+
+def load_config():
+    # This will be populated later if needed.
+    default_root = ""
     config_data = None
     if os.path.exists(CONFIG_FILE):
         try:
@@ -121,10 +178,12 @@ def load_config():
         }
     else:
         # First launch: save detected Steam path info
+        default_root, detected = default_game_folder()
+        default_mods = os.path.join(default_root, "UNION", "Content", "Paks", "~mods")
         cfg = {
             "mods_folder": default_mods_folder(),
             "game_root": default_root,
-            "game_mods_folder": default_mods,
+            "game_mods_folder": os.path.join(default_root, "UNION", "Content", "Paks", "~mods"),
             "ue4ss_mods_folder": os.path.join(default_root, "UNION", "Binaries", "Win64", "ue4ss", "Mods"),
             "ue4ss_logic_mods_folder": os.path.join(default_root, "UNION", "Content", "Paks", "LogicMods"),
             "enabled_mods": {},
