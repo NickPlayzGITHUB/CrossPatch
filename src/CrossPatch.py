@@ -130,13 +130,22 @@ class CrossPatchWindow(TkinterDnD.Tk):
                 priority_list.append(mod)
         # Remove mods from priority list if they were deleted
         self.cfg["mod_priority"] = [mod for mod in priority_list if mod in all_mods]
+        enabled_mods = self.cfg.get("enabled_mods", {})
+
+        # Sort mods to move disabled ones to the bottom, preserving relative order.
+        enabled_priority = [
+            mod for mod in self.cfg["mod_priority"] if enabled_mods.get(mod, False)
+        ]
+        disabled_priority = [
+            mod for mod in self.cfg["mod_priority"] if not enabled_mods.get(mod, False)
+        ]
+        self.cfg["mod_priority"] = enabled_priority + disabled_priority
+        Config.save_config(self.cfg)
 
         Util.clean_mods_folder(self.cfg)
-        enabled_mods = self.cfg.get("enabled_mods", {})
         # Enable mods in the correct priority order
-        for i, mod in enumerate(self.cfg["mod_priority"]):
-            if enabled_mods.get(mod, False):
-                Util.enable_mod_with_ui(mod, self.cfg, i, self)
+        for i, mod in enumerate(enabled_priority):
+            Util.enable_mod_with_ui(mod, self.cfg, i, self)
 
         self._update_treeview()
         print("Refreshed")
@@ -214,12 +223,6 @@ class CrossPatchWindow(TkinterDnD.Tk):
         mid = ttk.Frame(self, padding=8)
         mid.pack(fill=tk.BOTH, expand=True)
 
-        # Priority buttons
-        priority_frame = ttk.Frame(mid)
-        priority_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
-        ttk.Button(priority_frame, text="▲", width=3, command=self.move_mod_up).pack(pady=2)
-        ttk.Button(priority_frame, text="▼", width=3, command=self.move_mod_down).pack(pady=2)
-
         cols = ("enabled", "name", "version", "author", "type")
         self.tree = ttk.Treeview(mid, columns=cols, show="headings")
         self.tree.heading("enabled", text="")
@@ -233,13 +236,19 @@ class CrossPatchWindow(TkinterDnD.Tk):
         self.tree.column("author",  width=120, anchor=tk.W)
         self.tree.column("type", width=50, anchor=tk.CENTER)
         
+        # Configure a tag for the drop indicator highlight
+        self.tree.tag_configure('drop_indicator', background='dodgerblue')
+
         tree_scrollbar = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=tree_scrollbar.set)
         tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self.tree.bind("<Button-1>", self.on_tree_click)
-        self.context_menu = tk.Menu(self, tearoff=0)
+        # Bindings for drag-and-drop reordering and clicks
+        self.tree.bind("<ButtonPress-1>", self.on_drag_start)
+        self.tree.bind("<B1-Motion>", self.on_drag_motion)
+        self.tree.bind("<ButtonRelease-1>", self.on_drag_end)
+
         self.context_menu = tk.Menu(
             self,
             tearoff=0,
@@ -337,6 +346,11 @@ class CrossPatchWindow(TkinterDnD.Tk):
         # Add protocol for saving window size on close
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+    def on_closing(self):
+        """Saves window size and closes the application."""
+        self.cfg["window_size"] = self.geometry()
+        Config.save_config(self.cfg)
+        self.destroy()
         # Start listening for connections from other instances
         if self.instance_socket:
             self.instance_socket.listen(1)
@@ -357,6 +371,90 @@ class CrossPatchWindow(TkinterDnD.Tk):
             except Exception as e:
                 print(f"Socket listener error: {e}")
                 break
+
+    def on_drag_start(self, event):
+        """Initiates a drag operation or handles a checkbox click."""
+        self._drag_data = {}
+        item_id = self.tree.identify_row(event.y)
+        if not item_id:
+            return
+
+        # If the click is on the checkbox column, just toggle it and do not start a drag.
+        if self.tree.identify_column(event.x) == '#1':
+            self.on_tree_click(event)
+            return
+
+        # It's a drag operation. Store item info.
+        self._drag_data['item'] = item_id
+        self._drag_data['index'] = self.tree.index(item_id)
+
+        # Create a semi-transparent "ghost" window that follows the cursor
+        self._drag_data['ghost'] = ghost = tk.Toplevel(self)
+        ghost.overrideredirect(True)
+        ghost.attributes('-alpha', 0.7)
+        ghost.attributes('-topmost', True)
+        label = ttk.Label(ghost, text=self.tree.item(item_id, 'values')[1], padding=5, background='grey15', foreground='white')
+        label.pack()
+        ghost.update_idletasks()
+        # Position the ghost window at the cursor
+        ghost.geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
+
+    def on_drag_motion(self, event):
+        """Handles moving the item during a drag, updating the ghost and indicator."""
+        if not hasattr(self, '_drag_data') or not self._drag_data.get('item'):
+            return
+
+        # Move the ghost window
+        ghost = self._drag_data.get('ghost')
+        if ghost:
+            ghost.geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
+
+        # Manage the drop indicator highlight
+        target_item = self.tree.identify_row(event.y)
+        last_indicator = self._drag_data.get('last_indicator')
+
+        # Remove old indicator if it exists and is not the new target
+        if last_indicator and last_indicator != target_item and self.tree.exists(last_indicator):
+            self.tree.item(last_indicator, tags=())
+
+        # Add new indicator if target is valid
+        if target_item and target_item != self._drag_data['item']:
+            self.tree.item(target_item, tags=('drop_indicator',))
+            self._drag_data['last_indicator'] = target_item
+        else:
+            self._drag_data['last_indicator'] = None
+
+    def on_drag_end(self, event):
+        """Finalizes the drag operation, moving the item and saving the new order."""
+        if not hasattr(self, '_drag_data') or not self._drag_data.get('item'):
+            return
+
+        # Destroy the ghost window
+        ghost = self._drag_data.get('ghost')
+        if ghost:
+            ghost.destroy()
+
+        # Clean up any lingering indicator
+        last_indicator = self._drag_data.get('last_indicator')
+        if last_indicator and self.tree.exists(last_indicator):
+            self.tree.item(last_indicator, tags=())
+
+        # Determine the drop target and move the item
+        target_item = self.tree.identify_row(event.y)
+        dragged_item = self._drag_data.get('item')
+
+        if target_item and target_item != dragged_item:
+            self.tree.move(dragged_item, '', self.tree.index(target_item))
+
+        # Reset drag data
+        self._drag_data = {}
+
+        # Check if the order actually changed and save if it did
+        new_priority = list(self.tree.get_children())
+        if self.cfg["mod_priority"] != new_priority:
+            self.cfg["mod_priority"] = new_priority
+            Config.save_config(self.cfg)
+            self.after(50, self.refresh) # Schedule a refresh to apply changes
 
     def on_tree_click(self, event):
         row = self.tree.identify_row(event.y)
@@ -398,49 +496,13 @@ class CrossPatchWindow(TkinterDnD.Tk):
         # Schedule the slow refresh to run after the UI has had time to update
         self.after(100, do_refresh)
 
-    def on_closing(self):
-        self.cfg["window_size"] = self.geometry()
-        Config.save_config(self.cfg)
-        self.destroy()
-
     def on_right_click(self, event):
+        """Handles right-clicks on the treeview to show the context menu."""
         row_id = self.tree.identify_row(event.y)
         if not row_id:
             return
         self.tree.selection_set(row_id)
         self.context_menu.tk_popup(event.x_root, event.y_root)
-
-    def move_mod_up(self):
-        selection = self.tree.selection()
-        if not selection:
-            return
-        
-        mod_id = selection[0]
-        index = self.cfg["mod_priority"].index(mod_id)
-        
-        if index > 0:
-            self.cfg["mod_priority"].pop(index)
-            self.cfg["mod_priority"].insert(index - 1, mod_id)
-            Config.save_config(self.cfg)
-            self.refresh()
-            self.tree.selection_set(mod_id)
-            self.tree.focus(mod_id)
-
-    def move_mod_down(self):
-        selection = self.tree.selection()
-        if not selection:
-            return
-
-        mod_id = selection[0]
-        index = self.cfg["mod_priority"].index(mod_id)
-
-        if index < len(self.cfg["mod_priority"]) - 1:
-            self.cfg["mod_priority"].pop(index)
-            self.cfg["mod_priority"].insert(index + 1, mod_id)
-            Config.save_config(self.cfg)
-            self.refresh()
-            self.tree.selection_set(mod_id)
-            self.tree.focus(mod_id)
 
     def launch_game(self):
         Util.launch_game()

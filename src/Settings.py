@@ -35,19 +35,26 @@ class SettingsWindow(tk.Toplevel):
         entry.grid(row=1, column=1, sticky="we", padx=(5,0))
         pick_btn = ttk.Button(frame, text="...", width=3, command=self.on_change_game_root)
         pick_btn.grid(row=1, column=2, sticky="e", padx=(5,0))
+
+        ttk.Label(frame, text="Mods Folder:").grid(row=2, column=0, sticky="w", pady=(8,0))
+        self.mods_folder_var = tk.StringVar(value=self.config["mods_folder"])
+        mods_entry = ttk.Entry(frame, textvariable=self.mods_folder_var, width=50, state="readonly")
+        mods_entry.grid(row=2, column=1, sticky="we", padx=(5,0), pady=(8,0))
+        mods_pick_btn = ttk.Button(frame, text="...", width=3, command=self.on_change_mods_folder)
+        mods_pick_btn.grid(row=2, column=2, sticky="e", padx=(5,0), pady=(8,0))
         frame.columnconfigure(1, weight=1)
 
         # Button frame at the bottom
         btn_frame = ttk.Frame(frame)
         # Align the frame to the left of its grid cell
-        btn_frame.grid(row=2, column=0, columnspan=3, pady=(12,0), sticky="w")
+        btn_frame.grid(row=3, column=0, columnspan=3, pady=(12,0), sticky="w")
         
         # Pack buttons vertically (default side=TOP) and align them left (anchor=w)
         ttk.Button(btn_frame, text="Check for Mod Updates", command=self.on_check_mod_updates).pack(anchor="w")
         ttk.Button(btn_frame, text="Credits", command=lambda: self.open_credits()).pack(anchor="w", pady=(5, 0))
 
         self.title("Settings")
-        self.geometry("500x180")
+        self.geometry("500x220")
         self.resizable(False, False)
         self.update_idletasks()
         Util.center_window(self)
@@ -72,6 +79,18 @@ class SettingsWindow(tk.Toplevel):
         else:
             Config.hide_console() 
     
+    def on_change_mods_folder(self):
+        new_folder = filedialog.askdirectory(
+            title="Select a folder to store your mods",
+            initialdir=self.config["mods_folder"]
+        )
+        if not new_folder:
+            return
+        self.mods_folder_var.set(new_folder)
+        self.config["mods_folder"] = new_folder
+        Config.save_config(self.config)
+        # Trigger a refresh on the main window to reflect the change
+        self.parent.refresh()
 
     def on_change_game_root(self):
         new_root = filedialog.askdirectory(
