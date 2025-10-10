@@ -69,7 +69,7 @@ def get_gb_item_name(item_type, item_id):
     api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName"
     
     try:
-        response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.9'}, timeout=5)
+        response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.1.0'}, timeout=5)
         response.raise_for_status()
         item_data = response.json()
         name = item_data.get('_sName')
@@ -100,7 +100,7 @@ def get_gb_item_data_from_url(url):
     api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles,_sDescription,_sText,_aPreviewMedia"
     
     try:
-        response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.9'}, timeout=10)
+        response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.1.0'}, timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as e:

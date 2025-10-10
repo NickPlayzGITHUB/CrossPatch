@@ -99,7 +99,7 @@ class DownloadManager:
 
             api_item_type = item_type.rstrip('s').capitalize()
             api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles"
-            response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.9'})
+            response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.1.0'})
             response.raise_for_status()
             item_data = response.json()
 
@@ -165,7 +165,7 @@ class DownloadManager:
             # 1. Get Item Name from GameBanana API (we still need this for the folder name)
             api_item_type = item_type.capitalize()
             api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName"
-            response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.9'})
+            response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.1.0'})
             response.raise_for_status()
             item_data = response.json()
             item_name = item_data.get('_sName', f"mod_{item_id}").replace(" ", "")
@@ -225,7 +225,7 @@ class DownloadManager:
         self.progress_window.update()
 
     def _download_file_with_progress(self, url, destination_path):
-        with requests.get(url, stream=True, headers={'User-Agent': 'CrossPatch/1.0.9'}) as r:
+        with requests.get(url, stream=True, headers={'User-Agent': 'CrossPatch/1.1.0'}) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))
             bytes_downloaded = 0
