@@ -42,9 +42,6 @@ if __name__ == "__main__":
 
     # Start the thread that checks for app updates
     threading.Thread(target=lambda: Util.check_for_updates(app), daemon=True).start()
-    
-    # No more hiding in settings, let the user know if there's an update available for installed mods on start
-    app.after(600, app.check_all_mod_updates)
 
     # Start the thread that checks for mod updates
     threading.Thread(target=lambda: app.check_all_mod_updates(), daemon=True).start()
