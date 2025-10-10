@@ -188,7 +188,7 @@ def load_config():
             "show_cmd_logs": False,
             "steam_detected": detected,
             "mod_priority": [],
-            "window_size": "580x700"
+            "window_size": "580x720"
         }
         save_config(cfg)
         return cfg

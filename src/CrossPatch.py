@@ -16,6 +16,7 @@ from Credits import CreditsWindow
 from ModUpdatePrompt import ModUpdatePromptWindow
 from DownloadManager import DownloadManager
 from FileSelectDialog import FileSelectDialog
+from OneClickInstallDialog import OneClickInstallDialog
 from EditMod import EditModWindow
 from UpdateList import UpdateListWindow
 from ProfileManager import ProfileManager
@@ -191,12 +192,13 @@ class CrossPatchWindow(TkinterDnD.Tk):
                 item_id = parts[2]
                 file_ext = parts[3] if len(parts) > 3 else 'zip' # Assume zip if not provided
 
-                mod_name = Util.get_gb_item_name(item_type, item_id)
-                if not messagebox.askyesno(
-                    "Confirm Download",
-                    f"Do you want to download this mod?\n\n{mod_name}",
-                    parent=self
-                ):
+                # Fetch full item data to get name and image for the confirmation dialog
+                # The item_type from the schema might be singular ("Mod"), so we ensure it's plural for the URL.
+                gb_page_url = f"https://gamebanana.com/{item_type.lower()}s/{item_id}"
+                item_data = Util.get_gb_item_data_from_url(gb_page_url)
+
+                dialog = OneClickInstallDialog(self, item_data)
+                if not dialog.confirmed:
                     print("User cancelled download.")
                     return
                 dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
@@ -206,12 +208,10 @@ class CrossPatchWindow(TkinterDnD.Tk):
                 messagebox.showerror("Download Error", f"Could not parse the received URL. It may be malformed.\n\nDetails: {e}")
         elif url.startswith("crosspatch://install?url="): # Fallback for simple URL format
             gb_url = url.replace("crosspatch://install?url=", "")
-            mod_name = Util.get_gb_item_name_from_url(gb_url)
-            if not messagebox.askyesno(
-                "Confirm Download",
-                f"Do you want to download this mod?\n\n{mod_name}",
-                parent=self
-            ):
+            item_data = Util.get_gb_item_data_from_url(gb_url)
+
+            dialog = OneClickInstallDialog(self, item_data)
+            if not dialog.confirmed:
                 print("User cancelled download.")
                 return
             dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
@@ -373,7 +373,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
 
         self.cfg = Config.config
         self.profile_manager = ProfileManager(self.cfg)
-        self.geometry(self.cfg.get("window_size", "580x700"))
+        self.geometry(self.cfg.get("window_size", "580x720"))
         self.resizable(True, True)
         self.title(APP_TITLE)
 
