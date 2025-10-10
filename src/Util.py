@@ -88,6 +88,27 @@ def get_gb_item_name_from_url(url):
         raise ValueError("Could not extract valid item details from the URL.")
     return get_gb_item_name(item_type, item_id)
 
+def get_gb_item_data_from_url(url):
+    """
+    Fetches the full item data (including name and files) from the GameBanana API.
+    """
+    item_type, item_id = get_gb_item_details_from_url(url)
+    if not item_type or not item_id:
+        raise ValueError("Could not extract a valid item type and ID from the URL.")
+
+    api_item_type = item_type.rstrip('s').capitalize()
+    api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles,_sDescription,_sText,_aPreviewMedia"
+    
+    try:
+        response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.0.9'}, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        raise ConnectionError(f"Could not connect to GameBanana API: {e}")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Could not parse API response: {e}")
+
+
 def fetch_remote_version():
     print("Fetching version.txt")
     try:
@@ -226,12 +247,12 @@ def clean_mods_folder(cfg):  # enhanced refresh
                 except Exception as e:
                     print(f"Error disabling UE4SS mod {item}: {e}")
 
-def remove_mod_from_game_folders(mod_name, cfg):
+def remove_mod_from_game_folders(mod_name, cfg, profile_data=None):
     """
     Explicitly removes a single mod's installed files from both pak and UE4SS directories.
     This is used when a mod's type is changed to ensure no orphaned files are left.
     """
-    print(f"Performing targeted removal of '{mod_name}' from game folders...")
+    print(f"Performing targeted removal of '{mod_name}' from game folders...") # profile_data is available if needed
 
     # Remove from Pak mods folder (looks for prefixed folders like "0.MyMod")
     pak_dst = get_game_mods_folder(cfg)
@@ -309,7 +330,7 @@ def _ensure_ue4ss_installed(cfg, root_window):
         shutil.rmtree(temp_download_dir, ignore_errors=True)
         return False
 
-def enable_mod(mod_name, cfg, priority):
+def enable_mod(mod_name, cfg, priority, profile_data):
     mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
     mod_type = mod_info.get("mod_type", "pak") # Default to 'pak' if not specified
 
@@ -344,9 +365,9 @@ def enable_mod(mod_name, cfg, priority):
                     os.path.join(target_root, f)
                 )
 
-    cfg["enabled_mods"][mod_name] = True
+    profile_data["enabled_mods"][mod_name] = True
 
-def enable_mod_with_ui(mod_name, cfg, priority, root_window):
+def enable_mod_with_ui(mod_name, cfg, priority, root_window, profile_data):
     """Wrapper for enable_mod that handles UI interactions like the UE4SS check."""
     mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
     mod_type = mod_info.get("mod_type", "pak")
@@ -355,8 +376,8 @@ def enable_mod_with_ui(mod_name, cfg, priority, root_window):
     if mod_type.startswith("ue4ss"):
         if not _ensure_ue4ss_installed(cfg, root_window):
             # User cancelled or installation failed, so we abort enabling this mod.
-            cfg["enabled_mods"][mod_name] = False # Ensure it's marked as disabled
+            profile_data["enabled_mods"][mod_name] = False # Ensure it's marked as disabled
             return
 
     print(f"Enabling {mod_name} (type: {mod_type}) with priority {priority}")
-    enable_mod(mod_name, cfg, priority)
+    enable_mod(mod_name, cfg, priority, profile_data)

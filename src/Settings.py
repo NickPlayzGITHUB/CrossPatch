@@ -108,7 +108,4 @@ class SettingsWindow(tk.Toplevel):
         self.config["game_root"] = new_root
         self.config["game_mods_folder"] = os.path.join(new_root, "UNION", "Content", "Paks", "~mods")
         Config.save_config(self.config)
-        global GAME_ROOT, GAME_EXE
-        GAME_ROOT  = new_root
-        GAME_EXE   = os.path.join(GAME_ROOT, "SonicRacingCrossWorlds.exe")
         print("Updated root folder")

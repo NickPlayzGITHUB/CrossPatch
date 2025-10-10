@@ -148,38 +148,36 @@ def _find_game_in_steam_libraries(steam_path, app_id="2486820"):
     return "" # Return empty if not found
 
 def load_config():
-    # This will be populated later if needed.
-    default_root = ""
-    config_data = None
+    """Loads the configuration from disk, creating a default one only if it doesn't exist."""
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 config_data = json.load(f)
-        except Exception:
-            pass
-    if config_data and isinstance(config_data, dict):
-        root = config_data.get("game_root", default_root)
-        steam_detected = config_data.get("steam_detected", False)
-        enabled_mods = config_data.get("enabled_mods", {})
-        show_cmd_logs = config_data.get("show_cmd_logs", False)
-        # If mods_folder is missing after first launch, default to a subfolder in the config dir.
-        # This prevents asking the user repeatedly. The prompt should only be for the very first run.
-        return {
-            "mods_folder": config_data.get("mods_folder", os.path.join(CONFIG_DIR, "mods")),
-            "game_root": root,
-            "game_mods_folder": os.path.join(root, "UNION", "Content", "Paks", "~mods"),
-            "ue4ss_mods_folder": os.path.join(root, "UNION", "Binaries", "Win64", "ue4ss", "Mods"),
-            "ue4ss_logic_mods_folder": os.path.join(root, "UNION", "Content", "Paks", "LogicMods"),
-            "enabled_mods": enabled_mods,
-            "show_cmd_logs": show_cmd_logs,
-            "steam_detected": steam_detected,
-            "mod_priority": config_data.get("mod_priority", []),
-            "window_size": config_data.get("window_size", "580x700")
-        }
-    else:
-        # First launch: save detected Steam path info
+            # Basic validation to ensure it's a dictionary
+            if isinstance(config_data, dict):
+                return config_data
+        except json.JSONDecodeError as e:
+            # The file is corrupt. Back it up and notify the user.
+            print(f"Error loading config.json: {e}")
+            corrupt_path = os.path.join(CONFIG_DIR, "config.json.corrupt")
+            try:
+                os.rename(CONFIG_FILE, corrupt_path)
+                messagebox.showwarning(
+                    "Configuration Error",
+                    f"Your config.json file was corrupt and has been backed up to:\n{corrupt_path}\n\nA new configuration will be created."
+                )
+            except Exception as backup_error:
+                messagebox.showerror(
+                    "Configuration Error",
+                    f"Your config.json file is corrupt, but could not be backed up.\n\nError: {backup_error}"
+                )
+        except Exception as e:
+            print(f"An unexpected error occurred while loading config: {e}")
+
+    # If we reach here, it means no valid config exists. Create a new one.
+    print("No valid configuration found. Creating a new one.")
+    try:
         default_root, detected = default_game_folder()
-        default_mods = os.path.join(default_root, "UNION", "Content", "Paks", "~mods")
         cfg = {
             "mods_folder": default_mods_folder(),
             "game_root": default_root,
@@ -194,6 +192,9 @@ def load_config():
         }
         save_config(cfg)
         return cfg
+    except SystemExit as e:
+        # This happens if the user cancels a folder dialog during first-time setup.
+        sys.exit(f"Configuration setup cancelled. {e}")
 
 def save_config(cfg):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:

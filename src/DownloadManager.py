@@ -31,6 +31,9 @@ class DownloadManager:
     def download_mod_from_url(self, mod_url):
         threading.Thread(target=self._download_thread, args=(mod_url,), daemon=True).start()
 
+    def download_specific_file(self, file_info, item_name):
+        threading.Thread(target=self._specific_download_thread, args=(file_info, item_name), daemon=True).start()
+
     def download_and_extract_to(self, url, extract_destination):
         """Synchronously downloads and extracts an archive to a specific destination."""
         self._download_thread(url, extract_destination)
@@ -38,6 +41,49 @@ class DownloadManager:
     def download_from_schema(self, download_url, item_type, item_id, file_ext):
         """Starts a download thread using information from a URL schema."""
         threading.Thread(target=self._schema_download_thread, args=(download_url, item_type, item_id, file_ext), daemon=True).start()
+
+    def _specific_download_thread(self, file_info, item_name):
+        """
+        Downloads a specific file chosen by the user from the file selection dialog.
+        """
+        try:
+            download_url = file_info.get('_sDownloadUrl')
+            file_name = file_info.get('_sFile')
+            clean_item_name = item_name.replace(" ", "")
+
+            if not download_url:
+                raise ValueError("Could not find a download URL for the selected file.")
+
+            # 1. Download the file with progress
+            self._show_progress_window(f"Downloading {item_name}...", file_name)
+            temp_archive_path = os.path.join(self.mods_folder, file_name)
+            self._download_file_with_progress(download_url, temp_archive_path)
+
+            # 2. Security Scan
+            self.progress_label_var.set("Scanning for unsafe files...")
+            if not self._security_scan(temp_archive_path):
+                raise InterruptedError("Installation cancelled by user due to security warning.")
+
+            # 3. Extract the archive
+            self.progress_label_var.set("Extracting...")
+            extract_path = os.path.join(self.mods_folder, clean_item_name)
+            self._extract_archive(temp_archive_path, extract_path)
+
+            # 4. Clean up
+            os.remove(temp_archive_path)
+            self.progress_window.destroy()
+
+            if self.on_complete:
+                self.parent.after(0, self.on_complete)
+
+        except InterruptedError as e:
+            print(e)
+            if 'temp_archive_path' in locals() and os.path.exists(temp_archive_path):
+                os.remove(temp_archive_path)
+        except Exception as e:
+            if hasattr(self, 'progress_window') and self.progress_window.winfo_exists():
+                self.progress_window.destroy()
+            messagebox.showerror("Download Failed", f"An error occurred: {e}")
 
     def _download_thread(self, url, extract_override=None):
         """

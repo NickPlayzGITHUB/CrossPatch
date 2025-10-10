@@ -9,15 +9,17 @@ import sys
 import tkinter as tk
 import shutil
 import zipfile
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk, simpledialog
 from tkinterdnd2 import TkinterDnD, DND_FILES
 
 from Credits import CreditsWindow
 from Settings import SettingsWindow
 from ModUpdatePrompt import ModUpdatePromptWindow
 from DownloadManager import DownloadManager
+from FileSelectDialog import FileSelectDialog
 from EditMod import EditModWindow
 from UpdateList import UpdateListWindow
+from ProfileManager import ProfileManager
 import Config
 import Util
 from Constants import APP_TITLE, APP_VERSION
@@ -49,6 +51,58 @@ try:
     # On Linux/macOS, rarfile will look for 'unrar' in the system PATH.
 except ImportError:
     RARFILE_SUPPORT = False
+
+def find_assets_dir(max_up_levels=4, verbose=False):
+    """
+    Finds the 'assets' directory by searching from multiple candidate base paths.
+    This is a robust method to handle different execution contexts like running
+    from source, or as a packaged application (Nuitka, PyInstaller).
+    """
+    candidates = []
+
+    # 1) If something set sys.frozen (PyInstaller-style)
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.dirname(sys.executable))
+
+    # 2) PyInstaller _MEIPASS (safe to check)
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(sys._MEIPASS)
+
+    # 3) The invoked executable/script
+    try:
+        argv0 = os.path.abspath(sys.argv[0])
+        candidates.append(os.path.dirname(argv0))
+    except Exception:
+        pass
+
+    # 4) This script's file location (useful for dev runs)
+    try:
+        file_dir = os.path.abspath(os.path.dirname(__file__))
+        candidates.append(file_dir)
+        candidates.append(os.path.abspath(os.path.join(file_dir, "..")))
+    except NameError:
+        pass
+
+    # 5) Current working directory
+    candidates.append(os.getcwd())
+
+    # De-duplicate while preserving order
+    seen = set()
+    filtered_candidates = [c for c in candidates if c and c not in seen and not seen.add(c)]
+
+    # For every candidate, look for 'assets' in that dir and up to parent levels
+    for base in filtered_candidates:
+        for up in range(max_up_levels + 1):
+            check_path = os.path.abspath(os.path.join(base, *(['..'] * up)))
+            assets_path = os.path.join(check_path, "assets")
+            if os.path.isdir(assets_path):
+                if verbose:
+                    print(f"[find_assets_dir] Found assets at: {assets_path} (base='{base}', up={up})")
+                return assets_path
+
+    # Fallback if no assets directory is found
+    print("[find_assets_dir] WARNING: Could not find assets directory. Falling back to a default path.")
+    return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "assets")
 class CrossPatchWindow(TkinterDnD.Tk):
     def on_drop_mod(self, event):
         """Handles drag-and-drop of mods (folders or zips) onto the treeview."""
@@ -99,18 +153,28 @@ class CrossPatchWindow(TkinterDnD.Tk):
             return
 
         try:
-            mod_name = Util.get_gb_item_name_from_url(url)
-            if not messagebox.askyesno(
-                "Confirm Download",
-                f"Do you want to download this mod?\n\n{mod_name}",
-                parent=self
-            ):
-                print("User cancelled download.")
+            # Fetch all item data, including the list of files
+            item_data = Util.get_gb_item_data_from_url(url)
+            mod_name = item_data.get('_sName', 'Unknown Mod')
+            files = item_data.get('_aFiles')
+
+            if not files:
+                messagebox.showerror("No Files Found", "Could not find any downloadable files for this mod.", parent=self)
                 return
-            dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
-            dm.download_mod_from_url(url)
+
+            # Show the file selection dialog
+            dialog = FileSelectDialog(self, item_data)
+            selected_file = dialog.get_selection()
+
+            # If the user selected a file, proceed with the download
+            if selected_file:
+                dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
+                dm.download_specific_file(selected_file, mod_name)
+            else:
+                print("User cancelled file selection.")
+
         except Exception as e:
-            messagebox.showerror("Download Error", f"Could not get mod details.\n\n{e}")
+            messagebox.showerror("Download Error", f"Could not get mod details or start download.\n\n{e}", parent=self)
 
     def handle_protocol_url(self, url):
         """Handles a URL passed via the custom protocol (e.g., from another instance)."""
@@ -171,10 +235,11 @@ class CrossPatchWindow(TkinterDnD.Tk):
             search_text = self.search_var.get().lower() if hasattr(self, 'search_var') else ""
         else:
             search_text = ""
-        enabled_mods = self.cfg.get("enabled_mods", {})
+        active_profile = self.profile_manager.get_active_profile()
+        enabled_mods = active_profile.get("enabled_mods", {})
 
         self.tree.delete(*self.tree.get_children())
-        for mod in self.cfg["mod_priority"]:
+        for mod in active_profile.get("mod_priority", []):
             info    = Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod))
             name    = info.get("name", mod)
             version = info.get("version", "1.0")
@@ -199,32 +264,36 @@ class CrossPatchWindow(TkinterDnD.Tk):
         # Get a sorted list of all mods
         all_mods = Util.list_mod_folders(self.cfg["mods_folder"])
         
+        active_profile = self.profile_manager.get_active_profile()
+
         # Ensure all mods are in the priority list, append new ones
-        priority_list = self.cfg.get("mod_priority", [])
+        priority_list = active_profile.get("mod_priority", [])
         for mod in all_mods:
             if mod not in priority_list:
                 priority_list.append(mod)
         # Remove mods from priority list if they were deleted
-        self.cfg["mod_priority"] = [mod for mod in priority_list if mod in all_mods]
-        enabled_mods = self.cfg.get("enabled_mods", {})
+        active_profile["mod_priority"] = [mod for mod in priority_list if mod in all_mods]
+        enabled_mods = active_profile.get("enabled_mods", {})
 
         # Sort mods to move disabled ones to the bottom, preserving relative order.
         enabled_priority = [
-            mod for mod in self.cfg["mod_priority"] if enabled_mods.get(mod, False)
+            mod for mod in active_profile["mod_priority"] if enabled_mods.get(mod, False)
         ]
-        disabled_priority = [
-            mod for mod in self.cfg["mod_priority"] if not enabled_mods.get(mod, False)
-        ]
-        self.cfg["mod_priority"] = enabled_priority + disabled_priority
-        Config.save_config(self.cfg)
+        # Disabled mods are now sorted alphabetically.
+        disabled_priority = sorted(
+            [mod for mod in active_profile["mod_priority"] if not enabled_mods.get(mod, False)],
+            key=str.lower
+        )
+        
+        self.profile_manager.set_mod_priority(enabled_priority + disabled_priority)
 
         Util.clean_mods_folder(self.cfg)
         # Enable mods in the correct priority order
         for i, mod in enumerate(enabled_priority):
-            Util.enable_mod_with_ui(mod, self.cfg, i, self)
+            Util.enable_mod_with_ui(mod, self.cfg, i, self, active_profile)
 
         self._update_treeview()
-        print("Refreshed")
+        print("Saved and refreshed.")
 
         # Mod conflict detection
         conflicts = self.detect_mod_conflicts()
@@ -236,10 +305,16 @@ class CrossPatchWindow(TkinterDnD.Tk):
     def detect_mod_conflicts(self):
         # Scan enabled mods for file conflicts
         mods_folder = self.cfg["mods_folder"]
-        enabled_mods_dict = self.cfg.get("enabled_mods", {})
-        enabled_mods = [mod for mod in Util.list_mod_folders(mods_folder) if enabled_mods_dict.get(mod, False)]
+        active_profile = self.profile_manager.get_active_profile()
+        enabled_mods_dict = active_profile.get("enabled_mods", {})
+        enabled_mods = [mod for mod in active_profile.get("mod_priority", []) if enabled_mods_dict.get(mod, False)]
         file_map = {}
         conflicts = {}
+
+        # Define a set of filenames to ignore during conflict detection.
+        # These are often config or metadata files that don't cause actual in-game conflicts.
+        conflict_blacklist = {"info.json", "config.ini", "readme.txt", "readme.md", "changelog.txt"}
+
         for mod in enabled_mods:
             mod_path = os.path.join(mods_folder, mod)
 
@@ -247,13 +322,13 @@ class CrossPatchWindow(TkinterDnD.Tk):
             mod_info = Util.read_mod_info(mod_path)
             mod_type = mod_info.get("mod_type", "pak")
 
-            # Skip conflict detection for UE4SS mods
+            # Skip conflict detection for all UE4SS mod types
             if mod_type.startswith("ue4ss"):
                 continue
 
             for root, _, files in os.walk(mod_path):
                 for f in files:
-                    if f.lower() == "info.json":
+                    if f.lower() in conflict_blacklist:
                         continue
                     rel_path = os.path.relpath(os.path.join(root, f), mod_path)
                     if rel_path not in file_map:
@@ -270,21 +345,16 @@ class CrossPatchWindow(TkinterDnD.Tk):
 
         self.withdraw()
 
-        # Determine the base path for assets, for both development and packaged (PyInstaller) versions
-        if getattr(sys, 'frozen', False):
-            # Packaged version: assets are next to the exe
-            base_path = os.path.dirname(sys.executable)
-            asset_path = os.path.join(base_path, 'assets')
-        else:
-            # Development version: assets are in the project root, relative to this script in 'src'
-            base_path = os.path.dirname(os.path.abspath(__file__))
-            asset_path = os.path.join(base_path, '..', 'assets')
+        # Use the robust find_assets_dir function to locate the assets folder
+        asset_path = find_assets_dir(verbose=True)
+        print("Using assets folder:", asset_path)
 
         # Theme: Azure dark
         self.tk.call('source', os.path.join(asset_path, 'themes', 'azure', 'azure.tcl'))
         self.tk.call('set_theme', 'dark')
 
         self.cfg  = Config.config
+        self.profile_manager = ProfileManager(self.cfg)
         self.geometry(self.cfg.get("window_size", "580x700"))
         self.resizable(True, True)
         self.title(APP_TITLE)
@@ -295,6 +365,30 @@ class CrossPatchWindow(TkinterDnD.Tk):
         #      Config.show_console()
         # else:
         #      Config.hide_console()
+
+        # --- Profile Management UI ---
+        profile_frame = ttk.Frame(self, padding=(8, 8, 8, 0))
+        profile_frame.pack(fill=tk.X)
+        ttk.Label(profile_frame, text="Profile:").pack(side=tk.LEFT)
+        
+        self.profile_var = tk.StringVar()
+        self.profile_selector = ttk.Combobox(profile_frame, textvariable=self.profile_var, state="readonly", width=30)
+        self.profile_selector.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        self.profile_selector.bind("<<ComboboxSelected>>", self.on_profile_change)
+        
+        # Prevent text selection/highlighting in the combobox
+        self.profile_selector.bind("<B1-Motion>", lambda e: "break")
+        self.profile_selector.bind("<Shift-Button-1>", lambda e: "break")
+        self.profile_selector.bind("<Double-Button-1>", lambda e: "break")
+        self.profile_selector.bind("<FocusIn>", lambda e: self.profile_selector.selection_clear())
+
+        # Add profile management buttons
+        profile_btn_frame = ttk.Frame(profile_frame)
+        profile_btn_frame.pack(side=tk.RIGHT, padx=(5,0))
+        ttk.Button(profile_btn_frame, text="+", command=self.add_profile, width=3).pack(side=tk.LEFT)
+        ttk.Button(profile_btn_frame, text="Edit", command=self.rename_profile).pack(side=tk.LEFT, padx=5)
+        ttk.Button(profile_btn_frame, text="Delete", command=self.delete_profile).pack(side=tk.LEFT)
+        self.update_profile_selector()
 
         # Search bar (hidden by default)
         self.search_frame = ttk.Frame(self, padding=(8, 8, 8, 0))
@@ -390,9 +484,19 @@ class CrossPatchWindow(TkinterDnD.Tk):
         ttk.Label(self, text=f"CrossPatch {APP_VERSION}",
                   font=("Segoe UI", 8)).pack(pady=(0,8))
 
-        # Launch Game button at the very bottom
-        launch_btn = ttk.Button(self, text="Launch Game", command=self.launch_game)
-        launch_btn.pack(side=tk.BOTTOM, fill=tk.X, padx=8, pady=(0, 8))
+        # --- Bottom action buttons ---
+        bottom_action_frame = ttk.Frame(self, padding=(8, 0, 8, 8))
+        bottom_action_frame.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # Configure columns to make buttons expand equally
+        bottom_action_frame.columnconfigure(0, weight=1)
+        bottom_action_frame.columnconfigure(1, weight=1)
+
+        save_btn = ttk.Button(bottom_action_frame, text="Save", command=self.save_and_refresh)
+        save_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        launch_btn = ttk.Button(bottom_action_frame, text="Save & Launch", command=self.save_and_launch)
+        launch_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         # --- Final Window Setup ---
         # Set the icon and center the window before showing it.
@@ -437,8 +541,8 @@ class CrossPatchWindow(TkinterDnD.Tk):
 
     def on_closing(self):
         """Saves window size and closes the application."""
-        self.cfg["window_size"] = self.geometry()
-        Config.save_config(self.cfg)
+        self.cfg["window_size"] = self.geometry()  # Save window size
+        self.profile_manager.save()  # Save all profile and config data
         self.destroy()
 
     def _socket_listener(self):
@@ -537,10 +641,8 @@ class CrossPatchWindow(TkinterDnD.Tk):
 
         # Check if the order actually changed and save if it did
         new_priority = list(self.tree.get_children())
-        if self.cfg["mod_priority"] != new_priority:
-            self.cfg["mod_priority"] = new_priority
-            Config.save_config(self.cfg)
-            self.after(50, self.refresh) # Schedule a refresh to apply changes
+        if self.profile_manager.get_active_profile().get("mod_priority") != new_priority:
+            self.profile_manager.set_mod_priority(new_priority)
 
     def on_tree_click(self, event):
         row = self.tree.identify_row(event.y)
@@ -552,35 +654,72 @@ class CrossPatchWindow(TkinterDnD.Tk):
         if not mod_id: # Double-check that we have a valid mod ID
             return
 
-        # --- Immediate UI Feedback ---
-        is_enabling = not self.cfg["enabled_mods"].get(mod_id, False)
-        action_message = "Enabling mod..." if is_enabling else "Disabling mod..."
+        active_profile = self.profile_manager.get_active_profile()
+        is_enabling = not active_profile.get("enabled_mods", {}).get(mod_id, False)
 
         # Toggle the mod's state in the config
-        self.cfg["enabled_mods"][mod_id] = is_enabling
-        Config.save_config(self.cfg)
+        self.profile_manager.set_mod_enabled(mod_id, is_enabling)
 
         # Update the checkbox in the treeview instantly
         current_values = list(self.tree.item(mod_id, "values"))
         current_values[0] = "☑" if is_enabling else "☐"
         self.tree.item(mod_id, values=tuple(current_values))
 
-        # --- Deferred Heavy Lifting ---
-        def do_refresh():
-            # Create and show a simple loading popup
-            popup = tk.Toplevel(self)
-            popup.transient(self)
-            popup.title("Working...")
-            popup.resizable(False, False)
-            ttk.Label(popup, text=action_message, padding=20).pack()
-            popup.update_idletasks()
-            self.update_idletasks() # Show the popup
+    def update_profile_selector(self):
+        """Updates the profile combobox with the latest list of profiles."""
+        profiles = self.profile_manager.get_profile_names()
+        active_profile = self.profile_manager.get_active_profile_name()
+        
+        self.profile_selector['values'] = profiles
+        self.profile_var.set(active_profile)
 
-            self.refresh() # This is the slow part
-            popup.destroy()
+    def on_profile_change(self, event=None):
+        """Handles switching to a new profile."""
+        new_profile = self.profile_var.get()
+        if self.profile_manager.set_active_profile(new_profile):
+            self.refresh() # A full refresh is needed to apply the new profile
 
-        # Schedule the slow refresh to run after the UI has had time to update
-        self.after(100, do_refresh)
+    def add_profile(self):
+        """Creates a new profile."""
+        new_name = simpledialog.askstring("New Profile", "Enter a name for the new profile:", parent=self)
+        if self.profile_manager.create_profile(new_name):
+            self.update_profile_selector()
+            self.refresh()
+        elif new_name: # If they entered a name but it failed (e.g., duplicate)
+            messagebox.showerror("Error", "A profile with this name already exists or the name is invalid.", parent=self)
+
+    def rename_profile(self):
+        """Renames the currently active profile."""
+        old_name = self.profile_manager.get_active_profile_name()
+        
+        if old_name == self.profile_manager.DEFAULT_PROFILE_NAME:
+            messagebox.showerror("Error", "The 'Default' profile cannot be renamed.", parent=self)
+            return
+
+        new_name = simpledialog.askstring("Rename Profile", f"Enter a new name for '{old_name}':", initialvalue=old_name, parent=self)
+        
+        if self.profile_manager.rename_profile(old_name, new_name):
+            self.update_profile_selector()
+        elif new_name and new_name != old_name: # If they entered a new name but it failed
+            messagebox.showerror("Error", "A profile with this name already exists or the name is invalid.", parent=self)
+
+    def delete_profile(self):
+        """Deletes the currently active profile."""
+        profile_to_delete = self.profile_manager.get_active_profile_name()
+
+        if profile_to_delete == self.profile_manager.DEFAULT_PROFILE_NAME:
+            messagebox.showerror("Error", "The 'Default' profile cannot be deleted.", parent=self)
+            return
+        if len(self.profile_manager.get_profile_names()) <= 1:
+            messagebox.showerror("Error", "You cannot delete the last profile.", parent=self)
+            return
+
+        if not messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete the active profile '{profile_to_delete}'?", parent=self):
+            return
+
+        if self.profile_manager.delete_profile(profile_to_delete):
+            self.update_profile_selector()
+            self.refresh() # Refresh to load the new active profile
 
     def on_right_click(self, event):
         """Handles right-clicks on the treeview to show the context menu."""
@@ -591,7 +730,15 @@ class CrossPatchWindow(TkinterDnD.Tk):
         self.context_menu.tk_popup(event.x_root, event.y_root)
 
     def launch_game(self):
+        """Just launches the game. Kept for internal use if needed."""
         Util.launch_game()
+
+    def save_and_refresh(self):
+        self.refresh()
+
+    def save_and_launch(self):
+        self.refresh()
+        self.launch_game()
 
     def open_selected_mod_folder(self):
         print("Opening mod folder")
@@ -619,7 +766,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
         deletemod_confirm = tk.messagebox.askyesno(f"Mod Deletion", f"Are you sure you want to delete {mod_id}?",)
         if deletemod_confirm:
             print(f"Deleting mod {mod_id} from game folder (if exists)")
-            Util.remove_mod_from_game_folders(mod_id, self.cfg)
+            Util.remove_mod_from_game_folders(mod_id, self.cfg, self.profile_manager.get_active_profile())
 
             print(f"Deleting mod {mod_id} from mods folder")
             shutil.rmtree(os.path.join(self.cfg["mods_folder"], mod_id))
@@ -810,31 +957,3 @@ class CrossPatchWindow(TkinterDnD.Tk):
         if settings_win:
             settings_win.destroy()
         CreditsWindow(self)
-        
-    # Something is going wrong here
-    def on_toggle_logs(self):
-        enabled = self.show_logs_var.get()
-        self.cfg["show_cmd_logs"] = enabled
-        Config.save_config(self.cfg)
-        if enabled:
-            Config.show_console()
-        else:
-            Config.hide_console() 
-
-    def on_change_game_root(self):
-        new_root = filedialog.askdirectory(
-            title="Select Crossworlds Install Folder",
-            initialdir=self.cfg["game_root"]
-        )
-        if not new_root:
-            return
-        self.game_root_var.set(new_root)
-        self.cfg["game_root"] = new_root
-        self.cfg["game_mods_folder"] = os.path.join(new_root, "UNION", "Content", "Paks", "~mods")
-        self.cfg["ue4ss_mods_folder"] = os.path.join(new_root, "UNION", "Binaries", "Win64", "ue4ss", "Mods")
-        self.cfg["ue4ss_logic_mods_folder"] = os.path.join(new_root, "UNION", "Content", "Paks", "LogicMods")
-        Config.save_config(self.cfg)
-        global GAME_ROOT, GAME_EXE
-        GAME_ROOT  = new_root
-        GAME_EXE   = os.path.join(GAME_ROOT, "SonicRacingCrossWorlds.exe")
-        print("Updated root folder")

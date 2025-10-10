@@ -65,14 +65,15 @@ class EditModWindow(tk.Toplevel):
                 messagebox.showerror(f"{e}")
                 return
             
-            is_enabled = Config.config["enabled_mods"].get(folder, False)
+            active_profile = parent.profile_manager.get_active_profile()
+            is_enabled = active_profile.get("enabled_mods", {}).get(folder, False)
             new_mod_type = new_data["mod_type"]
 
             # If the mod type changed for an enabled mod, a full refresh is needed
             # to move it to the correct directory.
             if is_enabled and new_mod_type != original_mod_type:
                 # Explicitly remove the mod from its old location before refreshing
-                Util.remove_mod_from_game_folders(folder, Config.config)
+                Util.remove_mod_from_game_folders(folder, Config.config, active_profile)
                 parent.refresh()
             else: # Otherwise, just update the row in the UI
                 check = "☑" if is_enabled else "☐"
