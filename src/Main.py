@@ -43,6 +43,9 @@ if __name__ == "__main__":
     # Start the thread that checks for app updates
     threading.Thread(target=lambda: Util.check_for_updates(app), daemon=True).start()
 
+    # Start the thread that checks for mod updates
+    threading.Thread(target=lambda: app.check_all_mod_updates(), daemon=True).start()
+
     # Start the main UI loop
     app.mainloop()
 

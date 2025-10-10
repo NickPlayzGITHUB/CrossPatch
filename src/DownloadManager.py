@@ -38,9 +38,9 @@ class DownloadManager:
         """Synchronously downloads and extracts an archive to a specific destination."""
         self._download_thread(url, extract_destination)
     
-    def download_from_schema(self, download_url, item_type, item_id, file_ext):
+    def download_from_schema(self, download_url, item_type, item_id, file_ext, page_url=None):
         """Starts a download thread using information from a URL schema."""
-        threading.Thread(target=self._schema_download_thread, args=(download_url, item_type, item_id, file_ext), daemon=True).start()
+        threading.Thread(target=self._schema_download_thread, args=(download_url, item_type, item_id, file_ext, page_url), daemon=True).start()
 
     def _specific_download_thread(self, file_info, item_name):
         """
@@ -132,6 +132,9 @@ class DownloadManager:
             extract_path = extract_override if extract_override else os.path.join(self.mods_folder, item_name)
             self._extract_archive(temp_archive_path, extract_path)
 
+            # Add mod_page to info.json
+            self._update_mod_info_with_page(extract_path, url)
+
             # 5. Clean up
             os.remove(temp_archive_path)
             self.progress_window.destroy()
@@ -152,7 +155,7 @@ class DownloadManager:
                 raise e
             messagebox.showerror("Download Failed", f"An error occurred: {e}")
 
-    def _schema_download_thread(self, download_url, item_type, item_id, file_ext):
+    def _schema_download_thread(self, download_url, item_type, item_id, file_ext, page_url=None):
         """
         Handles a download where the URL, type, and ID are already known from the protocol schema.
         This is more direct and avoids an extra API call to get the item name.
@@ -185,6 +188,9 @@ class DownloadManager:
             self.progress_label_var.set("Extracting...")
             extract_path = os.path.join(self.mods_folder, item_name)
             self._extract_archive(temp_archive_path, extract_path)
+
+            # Add mod_page to info.json if a page_url was provided
+            self._update_mod_info_with_page(extract_path, page_url)
 
             # 5. Clean up
             os.remove(temp_archive_path)
@@ -291,3 +297,22 @@ class DownloadManager:
             shutil.move(nested_folder, temp_dir)
             os.rmdir(extract_path)
             os.rename(temp_dir, extract_path)
+
+    def _update_mod_info_with_page(self, mod_path, page_url):
+        """Reads, updates, and saves the info.json for a mod to include the mod_page."""
+        if not page_url or not os.path.isdir(mod_path):
+            return
+
+        try:
+            info_path = os.path.join(mod_path, "info.json")
+            # Use Util.read_mod_info to ensure an info.json is created if it doesn't exist
+            mod_info = Util.read_mod_info(mod_path)
+            
+            mod_info['mod_page'] = page_url
+
+            with open(info_path, "w", encoding="utf-8") as f:
+                import json
+                json.dump(mod_info, f, indent=2)
+            print(f"Updated info.json for '{os.path.basename(mod_path)}' with mod page.")
+        except Exception as e:
+            print(f"Could not update info.json for {os.path.basename(mod_path)}: {e}")

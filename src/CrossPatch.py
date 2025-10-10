@@ -202,7 +202,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
                     print("User cancelled download.")
                     return
                 dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
-                dm.download_from_schema(download_url, item_type, item_id, file_ext)
+                dm.download_from_schema(download_url, item_type, item_id, file_ext, page_url=gb_page_url)
 
             except (IndexError, ValueError) as e:
                 messagebox.showerror("Download Error", f"Could not parse the received URL. It may be malformed.\n\nDetails: {e}")
@@ -880,7 +880,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
             self.refresh()
 
 
-    def check_all_mod_updates(self):
+    def check_all_mod_updates(self, manual_check=False):
         print("Checking all mods for updates...")
         updates = {}
         
@@ -939,7 +939,13 @@ class CrossPatchWindow(TkinterDnD.Tk):
                 print(f"Error checking {mod_name}: {str(e)}")
                 continue
         
-        UpdateListWindow(self, updates)
+        # If updates were found, schedule the UI update on the main thread.
+        if updates:
+            self.after(0, lambda: UpdateListWindow(self, updates))
+        else:
+            print("No mod updates found.")
+            if manual_check:
+                self.after(0, lambda: messagebox.showinfo("Update Check", "No mod updates available.", parent=self))
     
     def check_mod_updates(self):
         print("Checking for mod updates...")
@@ -1066,7 +1072,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
 
     # --- Methods moved from SettingsWindow ---
     def on_check_mod_updates(self): # Renamed from on_check_mod_updates in SettingsWindow
-        self.check_all_mod_updates()
+        self.check_all_mod_updates(manual_check=True)
 
     def on_toggle_logs(self):
         enabled = self.show_logs_var.get()
