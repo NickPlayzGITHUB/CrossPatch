@@ -523,6 +523,14 @@ class CrossPatchWindow(TkinterDnD.Tk):
         self.refresh()
         btn_frame = ttk.Frame(self, padding=8)
         btn_frame.pack(fill=tk.X)
+        
+        # Configure grid columns to control button positions
+        btn_frame.columnconfigure(0, weight=0) # Refresh
+        btn_frame.columnconfigure(1, weight=0) # Save
+        btn_frame.columnconfigure(2, weight=0) # Add Mod
+        btn_frame.columnconfigure(3, weight=1) # Spacer
+        btn_frame.columnconfigure(4, weight=0) # Search
+
         # Settings button (currently hidden)
         # To show it again, uncomment the line below.
         self.settings_btn = ttk.Button(
@@ -535,7 +543,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
             btn_frame, text="🔍", width=3,
             command=self.toggle_search_bar
         )
-        self.search_btn.pack(side=tk.RIGHT, padx=5)
+        self.search_btn.grid(row=0, column=4, sticky="e", padx=5)
 
         # --- Load button icons ---
         try:
@@ -557,12 +565,12 @@ class CrossPatchWindow(TkinterDnD.Tk):
 
         # Create icon-based buttons for Refresh and Save
         self.refresh_btn = ttk.Button(btn_frame, image=self.refresh_icon, width=3, command=self.refresh)
-        self.refresh_btn.pack(side=tk.LEFT, padx=5)
+        self.refresh_btn.grid(row=0, column=0, sticky="w", padx=5)
         self.save_btn = ttk.Button(btn_frame, image=self.save_icon, width=3, command=self.save_and_refresh)
-        self.save_btn.pack(side=tk.LEFT)
+        self.save_btn.grid(row=0, column=1, sticky="w")
 
         self.add_mod_btn = ttk.Button(btn_frame, text="Add Mod from URL", image=self.gb_icon, compound=add_mod_compound, command=self.add_mod_from_url)
-        self.add_mod_btn.pack(side=tk.LEFT, padx=5)
+        self.add_mod_btn.grid(row=0, column=2, sticky="w", padx=5)
         ttk.Label(self, text=f"CrossPatch {APP_VERSION}",
                   font=("Segoe UI", 8)).pack(pady=(0,8))
 
@@ -628,17 +636,16 @@ class CrossPatchWindow(TkinterDnD.Tk):
         # Index 0 is the "Mods" tab, Index 1 is the "Settings" tab.
         if selected_tab_index == 0:
             # Show the buttons by packing them back into the frame.
-            # We pack them in reverse order of appearance to maintain layout.
-            self.search_btn.pack(side=tk.RIGHT, padx=5)
-            self.add_mod_btn.pack(side=tk.LEFT, padx=5)
-            self.save_btn.pack(side=tk.LEFT)
-            self.refresh_btn.pack(side=tk.LEFT, padx=5)
+            self.refresh_btn.grid(row=0, column=0, sticky="w", padx=5)
+            self.save_btn.grid(row=0, column=1, sticky="w")
+            self.add_mod_btn.grid(row=0, column=2, sticky="w", padx=5)
+            self.search_btn.grid(row=0, column=4, sticky="e", padx=5)
         else:
             # Hide the buttons.
-            self.search_btn.pack_forget()
-            self.add_mod_btn.pack_forget()
-            self.save_btn.pack_forget()
-            self.refresh_btn.pack_forget()
+            self.refresh_btn.grid_remove()
+            self.save_btn.grid_remove()
+            self.add_mod_btn.grid_remove()
+            self.search_btn.grid_remove()
 
 
     def on_closing(self):
