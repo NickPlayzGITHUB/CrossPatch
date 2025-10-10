@@ -13,7 +13,6 @@ from tkinter import filedialog, messagebox, ttk, simpledialog
 from tkinterdnd2 import TkinterDnD, DND_FILES
 
 from Credits import CreditsWindow
-from Settings import SettingsWindow
 from ModUpdatePrompt import ModUpdatePromptWindow
 from DownloadManager import DownloadManager
 from FileSelectDialog import FileSelectDialog
@@ -353,11 +352,41 @@ class CrossPatchWindow(TkinterDnD.Tk):
         self.tk.call('source', os.path.join(asset_path, 'themes', 'azure', 'azure.tcl'))
         self.tk.call('set_theme', 'dark')
 
-        self.cfg  = Config.config
+        # --- Custom Style Configuration for Sleek Tabs ---
+        style = ttk.Style(self)
+
+        # Get theme colors to ensure the new style matches the dark theme
+        selected_bg = style.lookup('TNotebook.Tab', 'background', ('selected',))
+        unselected_bg = style.lookup('TFrame', 'background') # Use the main window background for unselected tabs
+        border_color = style.lookup('TFrame', 'background')
+
+        # Configure the tab style for a modern look
+        style.configure('TNotebook.Tab',
+                        padding=[10, 3],          # [padx, pady]
+                        background=unselected_bg, # Make unselected tabs blend in
+                        borderwidth=1)
+        style.map('TNotebook.Tab',
+                  background=[('selected', selected_bg)]) # Highlight the selected tab
+
+        # Remove the outer border of the notebook widget itself for a cleaner look
+        style.configure('TNotebook', borderwidth=0)
+
+        self.cfg = Config.config
         self.profile_manager = ProfileManager(self.cfg)
         self.geometry(self.cfg.get("window_size", "580x700"))
         self.resizable(True, True)
         self.title(APP_TITLE)
+
+        # --- Tabbed Interface ---
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(expand=True, fill="both", padx=8, pady=8)
+        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_change)
+
+        self.mods_tab_frame = ttk.Frame(self.notebook)
+        self.settings_tab_frame = ttk.Frame(self.notebook)
+
+        self.notebook.add(self.mods_tab_frame, text="Mods")
+        self.notebook.add(self.settings_tab_frame, text="Settings")
 
         # FIXME: Config.hide_console currently crashes print functions.
         # Disabled during refactor for stability.
@@ -367,8 +396,8 @@ class CrossPatchWindow(TkinterDnD.Tk):
         #      Config.hide_console()
 
         # --- Profile Management UI ---
-        profile_frame = ttk.Frame(self, padding=(8, 8, 8, 0))
-        profile_frame.pack(fill=tk.X)
+        profile_frame = ttk.Frame(self.settings_tab_frame, padding=(0, 0, 0, 8))
+        profile_frame.pack(fill=tk.X, pady=(0, 8))
         ttk.Label(profile_frame, text="Profile:").pack(side=tk.LEFT)
         
         self.profile_var = tk.StringVar()
@@ -389,17 +418,57 @@ class CrossPatchWindow(TkinterDnD.Tk):
         ttk.Button(profile_btn_frame, text="Edit", command=self.rename_profile).pack(side=tk.LEFT, padx=5)
         ttk.Button(profile_btn_frame, text="Delete", command=self.delete_profile).pack(side=tk.LEFT)
         self.update_profile_selector()
+        
+        # --- Settings UI (integrated from former SettingsWindow) ---
+        settings_content_frame = ttk.Frame(self.settings_tab_frame, padding=(0, 8, 0, 0))
+        settings_content_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.show_logs_var = tk.BooleanVar(
+            value=self.cfg.get("show_cmd_logs", False)
+        )
+        chk = ttk.Checkbutton(
+            settings_content_frame,
+            text="Show console logs",
+            variable=self.show_logs_var,
+            command=self.on_toggle_logs
+        )
+        if platform.system() == "Windows":
+            chk.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,8))
+
+        ttk.Label(settings_content_frame, text="Game Directory:").grid(row=1, column=0, sticky="w")
+        self.game_root_var = tk.StringVar(value=self.cfg["game_root"])
+        entry = ttk.Entry(settings_content_frame, textvariable=self.game_root_var, width=50, state="readonly")
+        entry.grid(row=1, column=1, sticky="we", padx=(5,0))
+        pick_btn = ttk.Button(settings_content_frame, text="...", width=3, command=self.on_change_game_root)
+        pick_btn.grid(row=1, column=2, sticky="e", padx=(5,0))
+
+        ttk.Label(settings_content_frame, text="Mods Folder:").grid(row=2, column=0, sticky="w", pady=(8,0))
+        self.mods_folder_var = tk.StringVar(value=self.cfg["mods_folder"])
+        mods_entry = ttk.Entry(settings_content_frame, textvariable=self.mods_folder_var, width=50, state="readonly")
+        mods_entry.grid(row=2, column=1, sticky="we", padx=(5,0), pady=(8,0))
+        mods_pick_btn = ttk.Button(settings_content_frame, text="...", width=3, command=self.on_change_mods_folder)
+        mods_pick_btn.grid(row=2, column=2, sticky="e", padx=(5,0), pady=(8,0))
+        settings_content_frame.columnconfigure(1, weight=1)
+
+        # Settings action buttons
+        settings_btn_frame = ttk.Frame(settings_content_frame)
+        settings_btn_frame.grid(row=3, column=0, columnspan=3, pady=(12,0), sticky="w")
+        
+        ttk.Button(settings_btn_frame, text="Check for Mod Updates", command=self.on_check_mod_updates).pack(anchor="w")
+        ttk.Button(settings_btn_frame, text="Credits", command=lambda: self.open_credits()).pack(anchor="w", pady=(5, 0))
+
 
         # Search bar (hidden by default)
-        self.search_frame = ttk.Frame(self, padding=(8, 8, 8, 0))
+        self.search_frame = ttk.Frame(self.mods_tab_frame, padding=(0, 0, 0, 8))
         self.search_var = tk.StringVar()
         self.search_var.trace_add('write', lambda *args: self._update_treeview())
         ttk.Label(self.search_frame, text="Search:").pack(side=tk.LEFT)
         self.search_entry = ttk.Entry(self.search_frame, textvariable=self.search_var, width=30)
         self.search_entry.pack(side=tk.LEFT, padx=5)
         self.search_frame.pack_forget()
-
-        mid = ttk.Frame(self, padding=8)
+        
+        # --- Mods List (Treeview) ---
+        mid = ttk.Frame(self.mods_tab_frame)
         mid.pack(fill=tk.BOTH, expand=True)
 
         cols = ("enabled", "name", "version", "author", "type")
@@ -454,33 +523,46 @@ class CrossPatchWindow(TkinterDnD.Tk):
         self.refresh()
         btn_frame = ttk.Frame(self, padding=8)
         btn_frame.pack(fill=tk.X)
-        # Settings button
-        settings_btn = ttk.Button(
+        # Settings button (currently hidden)
+        # To show it again, uncomment the line below.
+        self.settings_btn = ttk.Button(
             btn_frame, text="⚙", width=3,
             command=self.open_settings
         )
-        settings_btn.pack(side=tk.RIGHT, padx=5)
+        # self.settings_btn.pack(side=tk.RIGHT, padx=5)
         # Search button
-        search_btn = ttk.Button(
+        self.search_btn = ttk.Button(
             btn_frame, text="🔍", width=3,
             command=self.toggle_search_bar
         )
-        search_btn.pack(side=tk.RIGHT, padx=5)
+        self.search_btn.pack(side=tk.RIGHT, padx=5)
 
-        # Load GameBanana icon for the "Add Mod" button
+        # --- Load button icons ---
         try:
+            # Refresh and Save icons
+            refresh_icon_path = os.path.join(asset_path, "refresh_icon.png")
+            self.refresh_icon = tk.PhotoImage(file=refresh_icon_path).subsample(3, 3)
+            save_icon_path = os.path.join(asset_path, "save_icon.png")
+            self.save_icon = tk.PhotoImage(file=save_icon_path).subsample(3, 3)
+            # GameBanana icon for the "Add Mod" button
             gb_icon_path = os.path.join(asset_path, "gb_icon.png")
             self.gb_icon = tk.PhotoImage(file=gb_icon_path).subsample(2, 2) # Adjust subsample as needed for icon size
             add_mod_compound = tk.LEFT
         except tk.TclError:
-            print("Could not load gb_icon.png. Button will be text-only.")
+            print("Could not load one or more icon files. Buttons may be text-only.")
+            self.refresh_icon = None
+            self.save_icon = None
             self.gb_icon = None
             add_mod_compound = tk.NONE
 
-        ttk.Button(btn_frame, text="Refresh Mods",
-                  command=self.refresh).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="Add Mod from URL", image=self.gb_icon,
-                  compound=add_mod_compound, command=self.add_mod_from_url).pack(side=tk.LEFT, padx=5)
+        # Create icon-based buttons for Refresh and Save
+        self.refresh_btn = ttk.Button(btn_frame, image=self.refresh_icon, width=3, command=self.refresh)
+        self.refresh_btn.pack(side=tk.LEFT, padx=5)
+        self.save_btn = ttk.Button(btn_frame, image=self.save_icon, width=3, command=self.save_and_refresh)
+        self.save_btn.pack(side=tk.LEFT)
+
+        self.add_mod_btn = ttk.Button(btn_frame, text="Add Mod from URL", image=self.gb_icon, compound=add_mod_compound, command=self.add_mod_from_url)
+        self.add_mod_btn.pack(side=tk.LEFT, padx=5)
         ttk.Label(self, text=f"CrossPatch {APP_VERSION}",
                   font=("Segoe UI", 8)).pack(pady=(0,8))
 
@@ -488,15 +570,11 @@ class CrossPatchWindow(TkinterDnD.Tk):
         bottom_action_frame = ttk.Frame(self, padding=(8, 0, 8, 8))
         bottom_action_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # Configure columns to make buttons expand equally
+        # Configure column to make the button expand
         bottom_action_frame.columnconfigure(0, weight=1)
-        bottom_action_frame.columnconfigure(1, weight=1)
 
-        save_btn = ttk.Button(bottom_action_frame, text="Save", command=self.save_and_refresh)
-        save_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-
-        launch_btn = ttk.Button(bottom_action_frame, text="Save & Launch", command=self.save_and_launch)
-        launch_btn.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        launch_btn = ttk.Button(bottom_action_frame, text="Launch Game", command=self.save_and_launch)
+        launch_btn.grid(row=0, column=0, sticky="ew")
 
         # --- Final Window Setup ---
         # Set the icon and center the window before showing it.
@@ -524,7 +602,6 @@ class CrossPatchWindow(TkinterDnD.Tk):
             except Exception as e:
                 print(f"Could not set dark title bar: {e}")
 
-        self.grab_set()
         # Drag and drop support
         self.tree.drop_target_register(DND_FILES)
         self.tree.dnd_bind('<<Drop>>', self.on_drop_mod)
@@ -538,9 +615,36 @@ class CrossPatchWindow(TkinterDnD.Tk):
         # Start listening for connections from other instances (for one-click installs)
         if self.instance_socket:
             threading.Thread(target=self._socket_listener, daemon=True).start()
+        
+        # --- Performance Fix for Resizing ---
+        # The tkinterdnd2 library can cause severe lag on window resize on Windows.
+        # Unbinding this specific event fixes the issue without affecting drag-and-drop functionality.
+        self.unbind('<Configure>')
+
+    def on_tab_change(self, event):
+        """Shows or hides mod-related buttons based on the selected tab."""
+        selected_tab_index = self.notebook.index(self.notebook.select())
+        
+        # Index 0 is the "Mods" tab, Index 1 is the "Settings" tab.
+        if selected_tab_index == 0:
+            # Show the buttons by packing them back into the frame.
+            # We pack them in reverse order of appearance to maintain layout.
+            self.search_btn.pack(side=tk.RIGHT, padx=5)
+            self.add_mod_btn.pack(side=tk.LEFT, padx=5)
+            self.save_btn.pack(side=tk.LEFT)
+            self.refresh_btn.pack(side=tk.LEFT, padx=5)
+        else:
+            # Hide the buttons.
+            self.search_btn.pack_forget()
+            self.add_mod_btn.pack_forget()
+            self.save_btn.pack_forget()
+            self.refresh_btn.pack_forget()
+
 
     def on_closing(self):
         """Saves window size and closes the application."""
+        print("Saving configuration before exiting...")
+        self.refresh()  # This saves the mod order and applies enabled mods.
         self.cfg["window_size"] = self.geometry()  # Save window size
         self.profile_manager.save()  # Save all profile and config data
         self.destroy()
@@ -580,6 +684,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
 
         # Create a semi-transparent "ghost" window that follows the cursor
         self._drag_data['ghost'] = ghost = tk.Toplevel(self)
+        ghost.transient(self) # Make it a transient window of the main app
         ghost.overrideredirect(True)
         ghost.attributes('-alpha', 0.7)
         ghost.attributes('-topmost', True)
@@ -951,9 +1056,49 @@ class CrossPatchWindow(TkinterDnD.Tk):
         EditModWindow(self, display_name, data, folder_name, tree_id)
 
     def open_settings(self):
-        SettingsWindow(self)
+        """Switches to the settings tab."""
+        self.notebook.select(self.settings_tab_frame)
 
     def open_credits(self, settings_win=None):
         if settings_win:
             settings_win.destroy()
         CreditsWindow(self)
+
+    # --- Methods moved from SettingsWindow ---
+    def on_check_mod_updates(self): # Renamed from on_check_mod_updates in SettingsWindow
+        self.check_all_mod_updates()
+
+    def on_toggle_logs(self):
+        enabled = self.show_logs_var.get()
+        self.cfg["show_cmd_logs"] = enabled
+        Config.save_config(self.cfg)
+        if enabled:
+            Config.show_console()
+        else:
+            Config.hide_console() 
+    
+    def on_change_mods_folder(self):
+        new_folder = filedialog.askdirectory(
+            title="Select a folder to store your mods",
+            initialdir=self.cfg["mods_folder"]
+        )
+        if not new_folder:
+            return
+        self.mods_folder_var.set(new_folder)
+        self.cfg["mods_folder"] = new_folder
+        Config.save_config(self.cfg)
+        # Trigger a refresh on the main window to reflect the change
+        self.refresh()
+
+    def on_change_game_root(self):
+        new_root = filedialog.askdirectory(
+            title="Select Crossworlds Install Folder",
+            initialdir=self.cfg["game_root"]
+        )
+        if not new_root:
+            return
+        self.game_root_var.set(new_root)
+        self.cfg["game_root"] = new_root
+        self.cfg["game_mods_folder"] = os.path.join(new_root, "UNION", "Content", "Paks", "~mods")
+        Config.save_config(self.cfg)
+        print("Updated root folder")
