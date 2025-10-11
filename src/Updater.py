@@ -178,17 +178,28 @@ pause > nul & start /b "" cmd /c "timeout /t 1 /nobreak > nul && rmdir /s /q "{s
             script_path = os.path.join(self.temp_dir, 'updater.sh')
             script_content = f"""
 #!/bin/bash
-echo "Waiting for CrossPatch to close..."
+echo "Waiting for CrossPatch (PID: {pid}) to close..."
 while kill -0 {pid} 2>/dev/null; do
     sleep 1
 done
+
 echo "Updating files..."
-cp -rf "{source_path}/"* "{app_path}/"
+
+# Check if the extracted update is a single file (for single-binary builds)
+if [ $(ls -1 "{source_path}" | wc -l) -eq 1 ]; then
+    echo "Single-file update detected. Replacing binary..."
+    mv -f "{source_path}/{app_executable}" "{os.path.join(app_path, app_executable)}"
+else
+    echo "Directory update detected. Copying files..."
+    cp -rf "{source_path}/"* "{app_path}/"
+fi
+
 echo "Relaunching CrossPatch..."
 chmod +x "{os.path.join(app_path, app_executable)}"
 "{os.path.join(app_path, app_executable)}" &
-echo "Cleaning up..."
-rm -- "$0"
+
+echo "Cleaning up temporary files..."
+rm -rf "{self.temp_dir}"
 """
             with open(script_path, 'w') as f:
                 f.write(script_content)
