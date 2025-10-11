@@ -9,7 +9,7 @@ import platform
 import re
 import tkinter as tk
 from tkinter import messagebox
-
+from tkinter.simpledialog import askstring
 from UpdatePrompt import UpdatePromptWindow
 
 from Constants import UPDATE_URL, APP_VERSION, STEAM_APP_ID
@@ -69,7 +69,7 @@ def get_gb_item_name(item_type, item_id):
     api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName"
     
     try:
-        response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.1.0'}, timeout=5)
+        response = requests.get(api_url, headers={'User-Agent': f'CrossPatch/{APP_VERSION}'}, timeout=5)
         response.raise_for_status()
         item_data = response.json()
         name = item_data.get('_sName')
@@ -100,7 +100,7 @@ def get_gb_item_data_from_url(url):
     api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles,_sDescription,_sText,_aPreviewMedia"
     
     try:
-        response = requests.get(api_url, headers={'User-Agent': 'CrossPatch/1.1.0'}, timeout=10)
+        response = requests.get(api_url, headers={'User-Agent': f'CrossPatch/{APP_VERSION}'}, timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.RequestException as e:
@@ -110,10 +110,10 @@ def get_gb_item_data_from_url(url):
 
 
 def fetch_remote_version():
-    print("Fetching version.txt")
+    print("Fetching remote version from GitHub")
     try:
-        with urllib.request.urlopen(UPDATE_URL, timeout=5) as resp:
-            return resp.read().decode("utf-8").strip()
+        with requests.get(UPDATE_URL, timeout=5) as resp:
+            return resp.json()
     except Exception:
         return None
 
@@ -128,13 +128,26 @@ def is_newer_version(local, remote):
 
 def check_for_updates(root):
     print("Checking for updates...")
-    remote = fetch_remote_version()
-    if remote and is_newer_version(APP_VERSION, remote):
-        print(f"CrossPatch {APP_VERSION} is outdated, Latest Version is {remote}")
-        root.after(0, lambda: show_update_prompt(root, remote))
+    remote_info = fetch_remote_version()
+    if not remote_info:
+        return
 
-def show_update_prompt(root, remote):
-    UpdatePromptWindow(root, remote)
+    remote_version = remote_info.get("tag_name")
+    if remote_version and is_newer_version(APP_VERSION, remote_version):
+        print(f"CrossPatch {APP_VERSION} is outdated, Latest Version is {remote_version}")
+        root.after(0, lambda: show_update_prompt(root, remote_version, remote_info))
+
+def show_update_prompt(root, remote_version, remote_info):
+    from Updater import Updater # Local import to avoid circular dependency
+    if messagebox.askyesno(
+        "Update Available",
+        f"A new version of CrossPatch is available!\n\n"
+        f"  Your Version: {APP_VERSION}\n"
+        f"  Latest Version: {remote_version}\n\n"
+        "Would you like to download and install it now?",
+        parent=root
+    ):
+        Updater(root, remote_info).start_update()
 
 def list_mod_folders(path):
     if not os.path.isdir(path):
