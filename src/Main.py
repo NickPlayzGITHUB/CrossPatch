@@ -40,8 +40,11 @@ if __name__ == "__main__":
         # Schedule the download to run after the main window is ready
         app.after(500, lambda: app.handle_protocol_url(url))
 
-    # Start the thread that checks for app updates
-    threading.Thread(target=lambda: Util.check_for_updates(app), daemon=True).start()
+    # Start the thread that checks for app updates, unless disabled by an environment variable.
+    if os.environ.get("CROSSPATCH_DISABLE_UPDATES") != "1":
+        threading.Thread(target=lambda: Util.check_for_updates(app), daemon=True).start()
+    else:
+        print("Auto-updater is disabled via CROSSPATCH_DISABLE_UPDATES environment variable.")
 
     # Start the thread that checks for mod updates
     threading.Thread(target=lambda: app.check_all_mod_updates(), daemon=True).start()
