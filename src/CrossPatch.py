@@ -339,7 +339,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
                 conflicts[rel_path] = mods
         return conflicts
     def __init__(self, instance_socket=None):
-        super().__init__()
+        super().__init__(className="crosspatch")
         self.instance_socket = instance_socket
 
         self.withdraw()
