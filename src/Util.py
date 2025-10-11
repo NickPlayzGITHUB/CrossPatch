@@ -110,10 +110,10 @@ def get_gb_item_data_from_url(url):
 
 
 def fetch_remote_version():
-    print("Fetching version.txt")
+    print("Fetching remote version from GitHub")
     try:
-        with urllib.request.urlopen(UPDATE_URL, timeout=5) as resp:
-            return resp.read().decode("utf-8").strip()
+        with requests.get(UPDATE_URL, timeout=5) as resp:
+            return resp.json()["tag_name"]
     except Exception:
         return None
 
