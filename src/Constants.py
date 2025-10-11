@@ -1,7 +1,7 @@
 APP_TITLE = "CrossPatch - A Crossworlds Mod Manager"
 APP_VERSION = "1.1.0"
 CONFIG_FILE = "mod_manager_config.json"
-UPDATE_URL = "https://raw.githubusercontent.com/NickPlayzGITHUB/CrossPatch/refs/heads/main/version.txt"
+UPDATE_URL = "https://api.github.com/repos/NickPlayzGITHUB/CrossPatch/releases/latest"
 GB_API_URL = "https://gamebanana.com/apiv11/Mod/"
 GITHUB_REDIRECT = "https://github.com/NickPlayzGITHUB/CrossPatch/releases/"
 STEAM_APP_ID = "2486820"
