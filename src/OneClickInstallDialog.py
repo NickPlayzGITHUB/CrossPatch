@@ -49,7 +49,7 @@ class OneClickInstallDialog(tk.Toplevel):
         image_placeholder.pack(pady=(0, 15))
         image_placeholder.pack_propagate(False) # Prevent frame from shrinking
         self.image_label = ttk.Label(image_placeholder, text="Loading image..." if PILLOW_SUPPORT else "Pillow not installed.")
-        self.image_label.pack(fill=tk.BOTH, expand=True)
+        self.image_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         if PILLOW_SUPPORT:
             threading.Thread(target=self._load_image, daemon=True).start()
 
