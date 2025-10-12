@@ -20,6 +20,7 @@ from FileSelectDialog import FileSelectDialog
 from OneClickInstallDialog import OneClickInstallDialog
 from EditMod import EditModWindow
 from ProfileManager import ProfileManager
+from Tooltip import Tooltip
 import Config
 import Util
 from Constants import APP_TITLE, APP_VERSION
@@ -460,10 +461,13 @@ class CrossPatchWindow(TkinterDnD.Tk):
 
         # Add profile management buttons
         profile_btn_frame = ttk.Frame(profile_frame)
-        profile_btn_frame.pack(side=tk.RIGHT, padx=(5,0))
-        ttk.Button(profile_btn_frame, text="+", command=self.add_profile, width=3).pack(side=tk.LEFT)
-        ttk.Button(profile_btn_frame, text="Edit", command=self.rename_profile).pack(side=tk.LEFT, padx=5)
-        ttk.Button(profile_btn_frame, text="Delete", command=self.delete_profile).pack(side=tk.LEFT)
+        profile_btn_frame.pack(side=tk.RIGHT, padx=(5, 0))
+        add_profile_btn = ttk.Button(profile_btn_frame, text="+", command=self.add_profile, width=3)
+        add_profile_btn.pack(side=tk.LEFT)
+        Tooltip(add_profile_btn, "Add new profile", style)
+        rename_profile_btn = ttk.Button(profile_btn_frame, text="Edit", command=self.rename_profile)
+        rename_profile_btn.pack(side=tk.LEFT, padx=5)
+        ttk.Button(profile_btn_frame, text="Delete", command=self.delete_profile).pack(side=tk.LEFT) # No tooltip needed, text is clear
         self.update_profile_selector()
         
         # --- Settings UI (integrated from former SettingsWindow) ---
@@ -487,6 +491,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
         entry = ttk.Entry(settings_content_frame, textvariable=self.game_root_var, width=50, state="readonly")
         entry.grid(row=1, column=1, sticky="we", padx=(5,0))
         pick_btn = ttk.Button(settings_content_frame, text="...", width=3, command=self.on_change_game_root)
+        Tooltip(pick_btn, "Browse for game directory", style)
         pick_btn.grid(row=1, column=2, sticky="e", padx=(5,0))
 
         ttk.Label(settings_content_frame, text="Mods Folder:").grid(row=2, column=0, sticky="w", pady=(8,0))
@@ -494,6 +499,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
         mods_entry = ttk.Entry(settings_content_frame, textvariable=self.mods_folder_var, width=50, state="readonly")
         mods_entry.grid(row=2, column=1, sticky="we", padx=(5,0), pady=(8,0))
         mods_pick_btn = ttk.Button(settings_content_frame, text="...", width=3, command=self.on_change_mods_folder)
+        Tooltip(mods_pick_btn, "Browse for mods folder", style)
         mods_pick_btn.grid(row=2, column=2, sticky="e", padx=(5,0), pady=(8,0))
         settings_content_frame.columnconfigure(1, weight=1)
 
@@ -592,6 +598,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
             btn_frame, text="🔍", width=3,
             command=self.toggle_search_bar
         )
+        Tooltip(self.search_btn, "Search mods (Ctrl+F)", style)
         self.search_btn.grid(row=0, column=4, sticky="e", padx=5)
 
         # --- Load button icons ---
@@ -614,14 +621,15 @@ class CrossPatchWindow(TkinterDnD.Tk):
 
         # Create icon-based buttons for Refresh and Save
         self.refresh_btn = ttk.Button(btn_frame, image=self.refresh_icon, width=3, command=self.refresh)
+        Tooltip(self.refresh_btn, "Apply changes and refresh list", style)
         self.refresh_btn.grid(row=0, column=0, sticky="w", padx=5)
         self.save_btn = ttk.Button(btn_frame, image=self.save_icon, width=3, command=self.save_and_refresh)
         self.save_btn.grid(row=0, column=1, sticky="w")
+        Tooltip(self.save_btn, "Save changes (same as refresh)", style)
 
         self.add_mod_btn = ttk.Button(btn_frame, text="Add Mod from URL", image=self.gb_icon, compound=add_mod_compound, command=self.add_mod_from_url)
         self.add_mod_btn.grid(row=0, column=2, sticky="w", padx=5)
-        ttk.Label(self, text=f"CrossPatch {APP_VERSION}",
-                  font=("Segoe UI", 8)).pack(pady=(0,8))
+        ttk.Label(self, text=f"CrossPatch {APP_VERSION}", font=("Segoe UI", 8)).pack(pady=(0,8))
 
         # --- Bottom action buttons ---
         bottom_action_frame = ttk.Frame(self, padding=(8, 0, 8, 8))
@@ -631,6 +639,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
         bottom_action_frame.columnconfigure(0, weight=1)
 
         launch_btn = ttk.Button(bottom_action_frame, text="Launch Game", command=self.save_and_launch)
+        Tooltip(launch_btn, "Apply changes and launch the game", style)
         launch_btn.grid(row=0, column=0, sticky="ew")
 
         # --- Final Window Setup ---
