@@ -7,6 +7,7 @@ import urllib.request
 import webbrowser
 import platform
 import re
+import sys
 import tkinter as tk
 from tkinter import messagebox
 from tkinter.simpledialog import askstring
@@ -108,6 +109,8 @@ def get_gb_item_data_from_url(url):
     except json.JSONDecodeError as e:
         raise ValueError(f"Could not parse API response: {e}")
 
+def is_packaged():
+    return getattr(sys, 'frozen', False) or "__compiled__" in globals()
 
 def fetch_remote_version():
     print("Fetching remote version from GitHub")

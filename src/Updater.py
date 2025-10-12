@@ -10,12 +10,13 @@ import threading
 import time
 
 from Constants import APP_VERSION
+import Util
 
 class Updater:
     def __init__(self, parent, remote_version_info):
         self.parent = parent
         self.remote_version_info = remote_version_info
-        self.temp_dir = os.path.join(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__), 'update_temp')
+        self.temp_dir = os.path.join(os.path.dirname(sys.executable) if Util.is_packaged() else os.path.dirname(__file__), 'update_temp')
 
     def start_update(self):
         """Starts the update process in a new thread."""
@@ -141,7 +142,7 @@ class Updater:
 
 
     def _run_updater_script(self, source_path):
-        app_path = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        app_path = os.path.dirname(sys.executable) if Util.is_packaged() else os.path.dirname(os.path.abspath(__file__))
         app_executable = os.path.basename(sys.executable) # e.g., 'CrossPatch.exe' or 'python.exe'
         pid = os.getpid()
 
@@ -176,8 +177,7 @@ pause > nul & start /b "" cmd /c "timeout /t 1 /nobreak > nul && rmdir /s /q "{s
 
         else: # Linux
             script_path = os.path.join(self.temp_dir, 'updater.sh')
-            script_content = f"""
-#!/bin/bash
+            script_content = f"""#!/bin/bash
 echo "Waiting for CrossPatch (PID: {pid}) to close..."
 while kill -0 {pid} 2>/dev/null; do
     sleep 1

@@ -36,7 +36,7 @@ try:
     RARFILE_SUPPORT = True
     if platform.system() == "Windows":
         # --- Point rarfile to the bundled UnRAR.exe on Windows ---
-        if getattr(sys, 'frozen', False):
+        if Util.is_packaged():
             # Packaged app: UnRAR.exe is in the 'assets' folder next to the executable
             unrar_path = os.path.join(os.path.dirname(sys.executable), 'assets', 'UnRAR.exe')
         else:
@@ -60,8 +60,8 @@ def find_assets_dir(max_up_levels=4, verbose=False):
     """
     candidates = []
 
-    # 1) If something set sys.frozen (PyInstaller-style)
-    if getattr(sys, "frozen", False):
+    # 1) If running in package (PyInstaller-style)
+    if Util.is_packaged():
         candidates.append(os.path.dirname(sys.executable))
 
     # 2) PyInstaller _MEIPASS (safe to check)

@@ -7,6 +7,8 @@ import re
 if platform.system() == "Windows": import winreg
 from tkinter import filedialog, messagebox, Tk
 
+import Util
+
 def get_config_dir():
     """
     Determines the appropriate directory for configuration files.
@@ -213,7 +215,7 @@ def register_url_protocol():
 
     try:
         # The command to execute. It differs between dev and packaged app.
-        if getattr(sys, 'frozen', False): # Packaged app
+        if Util.is_packaged(): # Packaged app
             command = f'"{sys.executable}" "%1"'
         else: # Development (running with python.exe)
             script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src', 'Main.py'))
