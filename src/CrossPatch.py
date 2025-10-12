@@ -272,6 +272,13 @@ class CrossPatchWindow(TkinterDnD.Tk):
         enabled_mods = active_profile.get("enabled_mods", {})
         updatable_mod_names = {v['name']: v for v in self.updatable_mods.values()}
 
+        # Conditionally display the 'update' column
+        all_cols = ("update", "enabled", "name", "version", "author", "type")
+        if self.updatable_mods:
+            self.tree.configure(displaycolumns=all_cols)
+        else:
+            self.tree.configure(displaycolumns=all_cols[1:]) # Hide the 'update' column
+
         self.tree.delete(*self.tree.get_children())
         for mod in active_profile.get("mod_priority", []):
             info    = Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod))
