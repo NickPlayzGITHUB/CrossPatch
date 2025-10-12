@@ -501,7 +501,6 @@ class CrossPatchWindow(TkinterDnD.Tk):
         settings_btn_frame = ttk.Frame(settings_content_frame)
         settings_btn_frame.grid(row=3, column=0, columnspan=3, pady=(12,0), sticky="w")
         
-        ttk.Button(settings_btn_frame, text="Check for Mod Updates", command=self.on_check_mod_updates).pack(anchor="w")
         ttk.Button(settings_btn_frame, text="Credits", command=lambda: self.open_credits()).pack(anchor="w", pady=(5, 0))
 
 
