@@ -731,12 +731,19 @@ class CrossPatchWindow(TkinterDnD.Tk):
             return
 
         clicked_col = self.tree.identify_column(event.x)
-        
-        # Column #1 is 'update', Column #2 is 'enabled'
-        if clicked_col == '#1': # Update column
+
+        # Get the currently displayed columns to handle dynamic column visibility
+        display_cols = self.tree.cget("displaycolumns")
+        if display_cols == ('#all',): # If all columns are shown by default
+            display_cols = self.tree.cget("columns")
+
+        # Check if the click was on the 'update' or 'enabled' column by their name
+        col_name = self.tree.column(clicked_col, "id")
+
+        if col_name == 'update' and 'update' in display_cols:
             self.on_update_column_click(item_id)
-            return # Prevent drag
-        elif clicked_col == '#2': # Enabled column
+            return # Prevent drag operation
+        elif col_name == 'enabled':
             self.on_enable_column_click(item_id)
             return
 
