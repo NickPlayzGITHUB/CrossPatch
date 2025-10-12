@@ -625,7 +625,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
         self.refresh_btn.grid(row=0, column=0, sticky="w", padx=5)
         self.save_btn = ttk.Button(btn_frame, image=self.save_icon, width=3, command=self.save_and_refresh)
         self.save_btn.grid(row=0, column=1, sticky="w")
-        Tooltip(self.save_btn, "Save changes (same as refresh)", style)
+        Tooltip(self.save_btn, "Save changes", style)
 
         self.add_mod_btn = ttk.Button(btn_frame, text="Add Mod from URL", image=self.gb_icon, compound=add_mod_compound, command=self.add_mod_from_url)
         self.add_mod_btn.grid(row=0, column=2, sticky="w", padx=5)
