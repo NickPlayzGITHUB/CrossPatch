@@ -1,12 +1,13 @@
 import tkinter as tk
 from tkinter import ttk
-import webbrowser
 
 import Util
 
 class ModUpdatePromptWindow(tk.Toplevel):
-    def __init__(self, parent, mod_page, mod_name, current_version, new_version):
+    def __init__(self, parent, mod_page, mod_name, current_version, new_version, mod_folder_name):
         super().__init__(parent)
+        self.parent = parent
+        self.mod_folder_name = mod_folder_name
 
         self.title("Update Available")
         self.resizable(False, False)
@@ -22,8 +23,7 @@ class ModUpdatePromptWindow(tk.Toplevel):
         btn_frame.pack(padx=12, pady=(0, 12))
         
         def on_update():
-            webbrowser.open(mod_page)
-            self.destroy()
+            self.parent.update_mod_from_url(mod_page, self.mod_folder_name)
             
         def on_ignore():
             self.destroy()

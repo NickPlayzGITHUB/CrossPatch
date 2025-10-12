@@ -73,12 +73,15 @@ class EditModWindow(tk.Toplevel):
             # to move it to the correct directory.
             if is_enabled and new_mod_type != original_mod_type:
                 # Explicitly remove the mod from its old location before refreshing
-                Util.remove_mod_from_game_folders(folder, Config.config, active_profile)
+                Util.remove_mod_from_game_folders(folder, Config.config)
                 parent.refresh()
             else: # Otherwise, just update the row in the UI
-                check = "☑" if is_enabled else "☐"
+                # Get the current values to preserve the update icon
+                current_values = list(parent.tree.item(item_id, "values"))
+                update_char = current_values[0] if current_values else ""
+                check_char = "☑" if is_enabled else "☐"
                 parent.tree.item(item_id, values=(
-                    check, new_data["name"], new_data["version"], new_data["author"], new_mod_type.upper()))
+                    update_char, check_char, new_data["name"], new_data["version"], new_data["author"], new_mod_type.upper()))
             self.destroy()
 
         def on_cancel():

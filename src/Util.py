@@ -9,8 +9,6 @@ import platform
 import re
 import tkinter as tk
 from tkinter import messagebox
-from tkinter.simpledialog import askstring
-from UpdatePrompt import UpdatePromptWindow
 
 from Constants import UPDATE_URL, APP_VERSION, STEAM_APP_ID
 from DownloadManager import DownloadManager
@@ -34,15 +32,25 @@ Code from:
 https://coderslegacy.com/tkinter-center-window-on-screen/
 '''
 def center_window(root):
-    if platform.system() == "Windows":
-        root.update_idletasks()
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
+    """Centers a tkinter window on the screen, preserving its current size."""
+    root.update_idletasks()  # Update geometry info
+
+    # Get the window's requested size from its geometry string (e.g., "1100x600")
+    # This is more reliable than winfo_width/height which might not be updated yet.
+    geom_str = root.geometry()
+    try:
+        width, height = map(int, geom_str.split('+')[0].split('x'))
+    except (ValueError, IndexError):
+        # Fallback if geometry string is unusual
+        width = root.winfo_width()
+        height = root.winfo_height()
  
-        x = (screen_width/2) - (root.winfo_width()/2)
-        y = (screen_height/2) - (root.winfo_height()/2)
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    x = (screen_width // 2) - (width // 2)
+    y = (screen_height // 2) - (height // 2)
  
-        root.geometry('%dx%d+%d+%d' % (root.winfo_width(), root.winfo_height(), x, y))
+    root.geometry(f'{width}x{height}+{x}+{y}')
 
 def get_gb_item_details_from_url(url):
     """
@@ -108,6 +116,33 @@ def get_gb_item_data_from_url(url):
     except json.JSONDecodeError as e:
         raise ValueError(f"Could not parse API response: {e}")
 
+def get_gb_mod_version(mod_page_url):
+    """
+    Fetches the latest version of a mod from the GameBanana API given its page URL.
+
+    Args:
+        mod_page_url (str): The full URL to the mod's GameBanana page.
+
+    Returns:
+        str: The version string (e.g., "1.1") or None if not found.
+    
+    Raises:
+        ValueError: If the URL is invalid or details cannot be extracted.
+        requests.RequestException: If there's a network-related error.
+    """
+    item_type, item_id = get_gb_item_details_from_url(mod_page_url)
+    if not item_type or not item_id:
+        raise ValueError("Could not extract valid item details from the URL.")
+
+    api_item_type = item_type.rstrip('s').capitalize()
+    api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sVersion"
+    
+    headers = {'User-Agent': f'CrossPatch/{APP_VERSION}', 'Accept': 'application/json'}
+    response = requests.get(api_url, headers=headers, timeout=10)
+    response.raise_for_status()
+    
+    item_data = response.json()
+    return item_data.get("_sVersion")
 
 def fetch_remote_version():
     print("Fetching remote version from GitHub")
@@ -118,9 +153,16 @@ def fetch_remote_version():
         return None
 
 def is_newer_version(local, remote):
+    # Ensure we're not comparing None or empty strings
+    local = local or "0"
+    remote = remote or "0"
+
     def to_nums(v):
-        return [int(x) for x in v.split(".")]
-    lv, rv = to_nums(local), to_nums(remote)
+        # Clean the version string: remove leading 'v' and any other non-numeric/non-dot characters
+        # This handles versions like 'v1.0', '1.0-beta', etc.
+        cleaned_v = re.sub(r'[^0-9.]', '', str(v))
+        return [int(x) for x in cleaned_v.split(".") if x.isdigit()]
+    lv, rv = to_nums(local), to_nums(remote) # No need to check for None here anymore
     length = max(len(lv), len(rv))
     lv += [0] * (length - len(lv))
     rv += [0] * (length - len(rv))
@@ -172,36 +214,26 @@ def read_mod_info(mod_path):
             # If info.json is corrupt, treat it as if it doesn't exist
             pass
 
-    # info.json does not exist, so we auto-detect and create it.
+    # info.json does not exist or is corrupt. Auto-detect type and return a default dict.
+    # The calling function will be responsible for saving it.
     mod_name = os.path.basename(mod_path)
     detected_type = "pak"  # Default type
 
     # Auto-detection logic
     logic_mods_path = os.path.join(mod_path, "LogicMods")
     script_path = os.path.join(mod_path, "Scripts")
-
     if os.path.isdir(logic_mods_path):
         detected_type = "ue4ss-logic"
     elif os.path.isdir(script_path):
         detected_type = "ue4ss-script"
 
     print(f"Auto-detected '{mod_name}' as type: {detected_type}")
-
-    new_info = {
+    return {
         "name": mod_name,
         "version": "1.0",
         "author": "Unknown",
         "mod_type": detected_type
     }
-
-    try:
-        with open(info_file, "w", encoding="utf-8") as f:
-            json.dump(new_info, f, indent=2)
-    except Exception as e:
-        print(f"Error creating info.json for {mod_name}: {e}")
-
-    return new_info
-
 
 def get_game_mods_folder(cfg):
     return os.path.join(
@@ -252,45 +284,52 @@ def clean_mods_folder(cfg):  # enhanced refresh
                 try:
                     # Check if it's a UE4SS mod before removing
                     mod_info = read_mod_info(os.path.join(cfg["mods_folder"], item))
-                    if mod_info.get("mod_type", "pak").startswith("ue4ss") and os.path.isdir(item_path):
-                        # For UE4SS mods, just delete the enabled.txt file to disable them.
-                        enabled_txt_path = os.path.join(item_path, "enabled.txt")
-                        if os.path.exists(enabled_txt_path):
-                            os.remove(enabled_txt_path)
+                    if mod_info.get("mod_type") == "ue4ss-script" and os.path.isdir(item_path):
+                        # For UE4SS script mods, we must remove the entire folder to ensure
+                        # a clean re-installation on refresh, preventing orphaned files.
+                        shutil.rmtree(item_path)
                 except Exception as e:
                     print(f"Error disabling UE4SS mod {item}: {e}")
 
-def remove_mod_from_game_folders(mod_name, cfg, profile_data=None):
+def remove_mod_from_game_folders(mod_name, cfg):
     """
     Explicitly removes a single mod's installed files from both pak and UE4SS directories.
     This is used when a mod's type is changed to ensure no orphaned files are left.
     """
-    print(f"Performing targeted removal of '{mod_name}' from game folders...") # profile_data is available if needed
+    print(f"Performing targeted removal of '{mod_name}' from game folders...")
+
+    # Read the mod's info to determine its type for accurate removal.
+    mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
+    mod_type = mod_info.get("mod_type", "pak")
 
     # Remove from Pak mods folder (looks for prefixed folders like "0.MyMod")
-    pak_dst = get_game_mods_folder(cfg)
-    if os.path.isdir(pak_dst):
-        # Regex to find the priority-prefixed folder for this specific mod
-        managed_folder_pattern = re.compile(r"^\d+\." + re.escape(mod_name) + "$")
-        for item in os.listdir(pak_dst):
-            item_path = os.path.join(pak_dst, item)
-            if os.path.isdir(item_path) and managed_folder_pattern.match(item):
-                try:
-                    print(f"Removing old pak installation: {item_path}")
-                    shutil.rmtree(item_path)
-                except Exception as e:
-                    print(f"Error removing directory {item_path}: {e}")
+    if mod_type == "pak":
+        pak_dst = get_game_mods_folder(cfg)
+        if os.path.isdir(pak_dst):
+            # Regex to find the priority-prefixed folder for this specific mod
+            managed_folder_pattern = re.compile(r"^\d{3,}\." + re.escape(mod_name) + "$")
+            for item in os.listdir(pak_dst):
+                item_path = os.path.join(pak_dst, item)
+                if os.path.isdir(item_path) and managed_folder_pattern.match(item):
+                    try:
+                        print(f"Removing pak installation: {item_path}")
+                        shutil.rmtree(item_path)
+                    except Exception as e:
+                        print(f"Error removing directory {item_path}: {e}")
 
-    # Remove from UE4SS script and logic mods folders
-    ue4ss_script_path = os.path.join(cfg.get("ue4ss_mods_folder", ""), mod_name)
-    if os.path.isdir(ue4ss_script_path):
-        print(f"Removing old UE4SS script installation: {ue4ss_script_path}")
-        shutil.rmtree(ue4ss_script_path)
+    # Remove from UE4SS script mods folder
+    elif mod_type == "ue4ss-script":
+        ue4ss_script_path = os.path.join(cfg.get("ue4ss_mods_folder", ""), mod_name)
+        if os.path.isdir(ue4ss_script_path):
+            print(f"Removing UE4SS script installation: {ue4ss_script_path}")
+            shutil.rmtree(ue4ss_script_path)
 
-    ue4ss_logic_path = os.path.join(cfg.get("ue4ss_logic_mods_folder", ""), mod_name)
-    if os.path.isdir(ue4ss_logic_path):
-        print(f"Removing old UE4SS logic installation: {ue4ss_logic_path}")
-        shutil.rmtree(ue4ss_logic_path)
+    # Remove from UE4SS logic mods folder
+    elif mod_type == "ue4ss-logic":
+        ue4ss_logic_path = os.path.join(cfg.get("ue4ss_logic_mods_folder", ""), mod_name)
+        if os.path.isdir(ue4ss_logic_path):
+            print(f"Removing UE4SS logic installation: {ue4ss_logic_path}")
+            shutil.rmtree(ue4ss_logic_path)
 
 def launch_game():
     if platform.system() == "Windows":

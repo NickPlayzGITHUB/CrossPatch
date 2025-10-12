@@ -34,6 +34,9 @@ class DownloadManager:
     def download_specific_file(self, file_info, item_name):
         threading.Thread(target=self._specific_download_thread, args=(file_info, item_name), daemon=True).start()
 
+    def update_specific_file(self, file_info, item_name, mod_folder_name, active_profile):
+        threading.Thread(target=self._specific_download_thread, args=(file_info, item_name, mod_folder_name, active_profile), daemon=True).start()
+
     def download_and_extract_to(self, url, extract_destination):
         """Synchronously downloads and extracts an archive to a specific destination."""
         self._download_thread(url, extract_destination)
@@ -42,13 +45,14 @@ class DownloadManager:
         """Starts a download thread using information from a URL schema."""
         threading.Thread(target=self._schema_download_thread, args=(download_url, item_type, item_id, file_ext, page_url), daemon=True).start()
 
-    def _specific_download_thread(self, file_info, item_name):
+    def _specific_download_thread(self, file_info, item_name, mod_folder_name=None, active_profile=None):
         """
         Downloads a specific file chosen by the user from the file selection dialog.
+        If `mod_folder_name` is provided, it performs an update by overwriting that folder.
         """
         try:
             download_url = file_info.get('_sDownloadUrl')
-            file_name = file_info.get('_sFile')
+            file_name = file_info.get('_sFile', 'download.zip')
             clean_item_name = item_name.replace(" ", "")
 
             if not download_url:
@@ -66,8 +70,33 @@ class DownloadManager:
 
             # 3. Extract the archive
             self.progress_label_var.set("Extracting...")
-            extract_path = os.path.join(self.mods_folder, clean_item_name)
+            # If updating, use the existing folder name. Otherwise, create a new one.
+            extract_path = os.path.join(self.mods_folder, mod_folder_name or clean_item_name)
+
+            # Preserve mod_page URL during update
+            existing_mod_page = None
+            if mod_folder_name:
+                existing_info = Util.read_mod_info(extract_path)
+                existing_mod_page = existing_info.get('mod_page')
+
+            # If this is an update, clear the old mod folder first for a clean install
+            if mod_folder_name and os.path.isdir(extract_path):
+                print(f"Update mode: Clearing old files from {extract_path}")
+                for item in os.listdir(extract_path):
+                    item_path = os.path.join(extract_path, item)
+                    shutil.rmtree(item_path) if os.path.isdir(item_path) else os.remove(item_path)
             self._extract_archive(temp_archive_path, extract_path)
+
+            # Update info.json with the version from the downloaded file
+            self._update_mod_info_with_version(extract_path, file_info.get('_sVersion'))
+
+            # Restore mod_page URL if it existed
+            if existing_mod_page:
+                self._update_mod_info_with_page(extract_path, existing_mod_page)
+
+            # If the mod was enabled, reinstall it to update the game files
+            if mod_folder_name and active_profile and active_profile.get("enabled_mods", {}).get(mod_folder_name):
+                self._reinstall_enabled_mod(mod_folder_name, active_profile)
 
             # 4. Clean up
             os.remove(temp_archive_path)
@@ -76,14 +105,17 @@ class DownloadManager:
             if self.on_complete:
                 self.parent.after(0, self.on_complete)
 
-        except InterruptedError as e:
+        except (InterruptedError, Exception) as e:
             print(e)
             if 'temp_archive_path' in locals() and os.path.exists(temp_archive_path):
                 os.remove(temp_archive_path)
-        except Exception as e:
             if hasattr(self, 'progress_window') and self.progress_window.winfo_exists():
                 self.progress_window.destroy()
-            messagebox.showerror("Download Failed", f"An error occurred: {e}")
+            if not isinstance(e, InterruptedError):
+                messagebox.showerror("Download Failed", f"An error occurred: {e}")
+            # Always call on_complete to refresh the UI state, even on failure/cancellation
+            if self.on_complete:
+                self.parent.after(0, self.on_complete)
 
     def _download_thread(self, url, extract_override=None):
         """
@@ -132,6 +164,9 @@ class DownloadManager:
             extract_path = extract_override if extract_override else os.path.join(self.mods_folder, item_name)
             self._extract_archive(temp_archive_path, extract_path)
 
+            # Update info.json with the version from the downloaded file
+            self._update_mod_info_with_version(extract_path, best_file.get('_sVersion'))
+
             # Add mod_page to info.json
             self._update_mod_info_with_page(extract_path, url)
 
@@ -164,11 +199,25 @@ class DownloadManager:
         try:
             # 1. Get Item Name from GameBanana API (we still need this for the folder name)
             api_item_type = item_type.capitalize()
-            api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName"
+            # We fetch _aFiles to find the specific version of the file being downloaded.
+            api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles"
             response = requests.get(api_url, headers={'User-Agent': f'CrossPatch/{APP_VERSION}'})
             response.raise_for_status()
             item_data = response.json()
             item_name = item_data.get('_sName', f"mod_{item_id}").replace(" ", "")
+
+            # Find the specific file being downloaded to get its version
+            item_version = None
+            files = item_data.get('_aFiles', [])
+            found_file = next((f for f in files if f.get('_sDownloadUrl') == download_url), None)
+
+            if found_file:
+                item_version = found_file.get('_sVersion')
+                print(f"Found specific file version for 1-click install: {item_version}")
+            else:
+                # Fallback for safety, though this case is unlikely
+                print("Could not find matching file for 1-click URL, falling back to main mod version.")
+                item_version = item_data.get('_sVersion')
 
             # The download URL from the schema might not have a clear filename.
             # We'll create a temporary one using the provided file extension.
@@ -188,6 +237,9 @@ class DownloadManager:
             self.progress_label_var.set("Extracting...")
             extract_path = os.path.join(self.mods_folder, item_name)
             self._extract_archive(temp_archive_path, extract_path)
+
+            # Update info.json with the version from the main item data
+            self._update_mod_info_with_version(extract_path, item_version)
 
             # Add mod_page to info.json if a page_url was provided
             self._update_mod_info_with_page(extract_path, page_url)
@@ -316,3 +368,38 @@ class DownloadManager:
             print(f"Updated info.json for '{os.path.basename(mod_path)}' with mod page.")
         except Exception as e:
             print(f"Could not update info.json for {os.path.basename(mod_path)}: {e}")
+
+    def _update_mod_info_with_version(self, mod_path, version_str):
+        """Reads, updates, and saves the info.json for a mod to include the version."""
+        if not os.path.isdir(mod_path):
+            return
+
+        try:
+            info_path = os.path.join(mod_path, "info.json")
+            mod_info = Util.read_mod_info(mod_path)
+
+            # Only update the version if it's not already set or if a new one is provided.
+            # Default to '1.0' if no version is found.
+            mod_info['version'] = version_str or mod_info.get('version') or "1.0"
+
+            with open(info_path, "w", encoding="utf-8") as f:
+                import json
+                json.dump(mod_info, f, indent=2)
+            print(f"Updated info.json for '{os.path.basename(mod_path)}' with version '{mod_info['version']}'.")
+        except Exception as e:
+            print(f"Could not update info.json for {os.path.basename(mod_path)} with version: {e}")
+
+    def _reinstall_enabled_mod(self, mod_folder_name, active_profile):
+        """Removes the old installed files and reinstalls the mod to reflect an update."""
+        print(f"Re-installing updated enabled mod: {mod_folder_name}")
+        try:
+            cfg = self.parent.cfg
+            # 1. Remove the old installation from game folders
+            Util.remove_mod_from_game_folders(mod_folder_name, cfg)
+            # 2. Re-install the new version
+            priority = active_profile.get("mod_priority", []).index(mod_folder_name)
+            Util.enable_mod_with_ui(mod_folder_name, cfg, priority, self.parent, active_profile)
+            print(f"Successfully re-installed {mod_folder_name}.")
+        except Exception as e:
+            print(f"Failed to automatically re-install updated mod '{mod_folder_name}': {e}")
+            messagebox.showwarning("Re-install Failed", f"Could not automatically re-install '{mod_folder_name}'. Please disable and re-enable it manually.")

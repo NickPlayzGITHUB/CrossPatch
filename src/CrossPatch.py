@@ -15,10 +15,10 @@ from tkinterdnd2 import TkinterDnD, DND_FILES
 from Credits import CreditsWindow
 from ModUpdatePrompt import ModUpdatePromptWindow
 from DownloadManager import DownloadManager
+from ConflictDialog import ConflictDialog
 from FileSelectDialog import FileSelectDialog
 from OneClickInstallDialog import OneClickInstallDialog
 from EditMod import EditModWindow
-from UpdateList import UpdateListWindow
 from ProfileManager import ProfileManager
 import Config
 import Util
@@ -217,6 +217,40 @@ class CrossPatchWindow(TkinterDnD.Tk):
             dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
             dm.download_mod_from_url(gb_url)
 
+    def update_mod_from_url(self, url, mod_folder_name):
+        """Handles the process of updating an existing mod from a URL."""
+        print(f"Starting update for '{mod_folder_name}' from URL: {url}")
+        try:
+            # Fetch all item data, including the list of files
+            item_data = Util.get_gb_item_data_from_url(url)
+            mod_name_from_gb = item_data.get('_sName', 'Unknown Mod')
+            files = item_data.get('_aFiles')
+
+            if not files:
+                messagebox.showerror("No Files Found", "Could not find any downloadable files for this mod.", parent=self)
+                return
+
+            # Show the file selection dialog
+            dialog = FileSelectDialog(self, item_data)
+            selected_file = dialog.get_selection()
+
+            # If the user selected a file, proceed with the download and update
+            if selected_file:
+                dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
+                active_profile = self.profile_manager.get_active_profile()
+                # Use the new update method in DownloadManager
+                dm.update_specific_file(selected_file, mod_name_from_gb, mod_folder_name, active_profile)
+            else:
+                # If the user cancels the update, we should still re-check updates
+                # to ensure the UI state is correct (e.g., if they manually updated).
+                # We run this in a separate thread to avoid blocking the UI.
+                threading.Thread(target=lambda: self.check_all_mod_updates(), daemon=True).start()
+                print("User cancelled file selection for update.")
+
+        except Exception as e:
+            messagebox.showerror("Update Error", f"Could not get mod details or start update.\n\n{e}", parent=self)
+
+
     def toggle_search_bar(self):
         if self.search_frame.winfo_ismapped():
             self.search_frame.pack_forget()
@@ -236,6 +270,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
             search_text = ""
         active_profile = self.profile_manager.get_active_profile()
         enabled_mods = active_profile.get("enabled_mods", {})
+        updatable_mod_names = {v['name']: v for v in self.updatable_mods.values()}
 
         self.tree.delete(*self.tree.get_children())
         for mod in active_profile.get("mod_priority", []):
@@ -251,12 +286,16 @@ class CrossPatchWindow(TkinterDnD.Tk):
                     continue
             
             enabled = enabled_mods.get(mod, False)
-            check   = "☑" if enabled else "☐"
+            check_char = "☑" if enabled else "☐"
+            tags = ()
             
-            self.tree.insert(
-                "", tk.END, iid=mod,
-                values=(check, name, version, author, mod_type)
-            )
+            if name in updatable_mod_names:
+                update_char = "⬆️"
+                tags = ('updatable',)
+            else:
+                update_char = ""
+            
+            self.tree.insert("", tk.END, iid=mod, values=(update_char, check_char, name, version, author, mod_type), tags=tags)
         print("Treeview updated")
 
     def refresh(self):
@@ -291,16 +330,16 @@ class CrossPatchWindow(TkinterDnD.Tk):
         for i, mod in enumerate(enabled_priority):
             Util.enable_mod_with_ui(mod, self.cfg, i, self, active_profile)
 
+        # Re-check for updates to clear any green highlights for mods that are now up-to-date
+        threading.Thread(target=lambda: self.check_all_mod_updates(), daemon=True).start()
+
         self._update_treeview()
         print("Saved and refreshed.")
 
         # Mod conflict detection
         conflicts = self.detect_mod_conflicts()
         if conflicts:
-            msg = "Mod Conflict Detected!\n\nThe following files are provided by multiple enabled mods:\n\n"
-            for file, mods in conflicts.items():
-                msg += f"{file}: {', '.join(mods)}\n"
-            messagebox.showwarning("Mod Conflict Detected", msg)
+            ConflictDialog(self, conflicts)
     def detect_mod_conflicts(self):
         # Scan enabled mods for file conflicts
         mods_folder = self.cfg["mods_folder"]
@@ -374,6 +413,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
         self.cfg = Config.config
         self.profile_manager = ProfileManager(self.cfg)
         self.geometry(self.cfg.get("window_size", "580x720"))
+        self.updatable_mods = {} # To store mods with available updates
         self.resizable(True, True)
         self.title(APP_TITLE)
 
@@ -471,13 +511,15 @@ class CrossPatchWindow(TkinterDnD.Tk):
         mid = ttk.Frame(self.mods_tab_frame)
         mid.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("enabled", "name", "version", "author", "type")
+        cols = ("update", "enabled", "name", "version", "author", "type")
         self.tree = ttk.Treeview(mid, columns=cols, show="headings")
+        self.tree.heading("update", text="")
         self.tree.heading("enabled", text="")
         self.tree.heading("name",    text="Mod Name")
         self.tree.heading("version", text="Version")
         self.tree.heading("author",  text="Author")
         self.tree.heading("type", text="Type")
+        self.tree.column("update", width=30, anchor=tk.CENTER, stretch=False)
         self.tree.column("enabled", width=30, anchor=tk.CENTER, stretch=False)
         self.tree.column("name",    width=180, anchor=tk.W)
         self.tree.column("version", width=80,  anchor=tk.CENTER)
@@ -486,6 +528,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
         
         # Configure a tag for the drop indicator highlight
         self.tree.tag_configure('drop_indicator', background='dodgerblue')
+        self.tree.tag_configure('updatable', foreground='springgreen')
 
         tree_scrollbar = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=tree_scrollbar.set)
@@ -680,11 +723,17 @@ class CrossPatchWindow(TkinterDnD.Tk):
         if not item_id:
             return
 
-        # If the click is on the checkbox column, just toggle it and do not start a drag.
-        if self.tree.identify_column(event.x) == '#1':
-            self.on_tree_click(event)
+        clicked_col = self.tree.identify_column(event.x)
+        
+        # Column #1 is 'update', Column #2 is 'enabled'
+        if clicked_col == '#1': # Update column
+            self.on_update_column_click(item_id)
+            return # Prevent drag
+        elif clicked_col == '#2': # Enabled column
+            self.on_enable_column_click(item_id)
             return
 
+        # Otherwise, it's a drag operation.
         # It's a drag operation. Store item info.
         self._drag_data['item'] = item_id
         self._drag_data['index'] = self.tree.index(item_id)
@@ -695,7 +744,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
         ghost.overrideredirect(True)
         ghost.attributes('-alpha', 0.7)
         ghost.attributes('-topmost', True)
-        label = ttk.Label(ghost, text=self.tree.item(item_id, 'values')[1], padding=5, background='grey15', foreground='white')
+        label = ttk.Label(ghost, text=self.tree.item(item_id, 'values')[2], padding=5, background='grey15', foreground='white')
         label.pack()
         ghost.update_idletasks()
         # Position the ghost window at the cursor
@@ -756,26 +805,27 @@ class CrossPatchWindow(TkinterDnD.Tk):
         if self.profile_manager.get_active_profile().get("mod_priority") != new_priority:
             self.profile_manager.set_mod_priority(new_priority)
 
-    def on_tree_click(self, event):
-        row = self.tree.identify_row(event.y)
-        col = self.tree.identify_column(event.x)
-        if not row or col != "#1":
-            return
+    def on_update_column_click(self, mod_folder_name):
+        """Handles clicks on the update icon column."""
+        if mod_folder_name in self.updatable_mods:
+            mod_update_info = self.updatable_mods[mod_folder_name]
+            url = mod_update_info['url']
+            print(f"Starting update for '{mod_folder_name}' from action column click.")
+            self.update_mod_from_url(url, mod_folder_name)
 
-        mod_id = row # Use the identified row directly
-        if not mod_id: # Double-check that we have a valid mod ID
-            return
-
+    def on_enable_column_click(self, mod_folder_name):
+        """Handles clicks on the enable/disable checkbox column."""
         active_profile = self.profile_manager.get_active_profile()
-        is_enabling = not active_profile.get("enabled_mods", {}).get(mod_id, False)
+        is_enabling = not active_profile.get("enabled_mods", {}).get(mod_folder_name, False)
 
         # Toggle the mod's state in the config
-        self.profile_manager.set_mod_enabled(mod_id, is_enabling)
+        self.profile_manager.set_mod_enabled(mod_folder_name, is_enabling)
 
-        # Update the checkbox in the treeview instantly
-        current_values = list(self.tree.item(mod_id, "values"))
-        current_values[0] = "☑" if is_enabling else "☐"
-        self.tree.item(mod_id, values=tuple(current_values))
+        # Update the checkbox character in the treeview instantly
+        current_values = list(self.tree.item(mod_folder_name, "values"))
+        # The checkbox is now in the second column (index 1)
+        current_values[1] = "☑" if is_enabling else "☐"
+        self.tree.item(mod_folder_name, values=tuple(current_values))
 
     def update_profile_selector(self):
         """Updates the profile combobox with the latest list of profiles."""
@@ -878,7 +928,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
         deletemod_confirm = tk.messagebox.askyesno(f"Mod Deletion", f"Are you sure you want to delete {mod_id}?",)
         if deletemod_confirm:
             print(f"Deleting mod {mod_id} from game folder (if exists)")
-            Util.remove_mod_from_game_folders(mod_id, self.cfg, self.profile_manager.get_active_profile())
+            Util.remove_mod_from_game_folders(mod_id, self.cfg)
 
             print(f"Deleting mod {mod_id} from mods folder")
             shutil.rmtree(os.path.join(self.cfg["mods_folder"], mod_id))
@@ -900,45 +950,22 @@ class CrossPatchWindow(TkinterDnD.Tk):
             if not mod_page or not mod_page.startswith("https://gamebanana.com"):
                 print(f"Skipping {mod_name} - no Gamebanana page")
                 continue
+            mod_folder_name = mod
                 
             try:
+                # Use the new centralized function to get the version
+                gb_version = Util.get_gb_mod_version(mod_page)
                 
-                item_id = None
-                for type_path in ["mods", "wips", "updates"]:
-                    if f"/{type_path}/" in mod_page:
-                        parts = mod_page.split(f"/{type_path}/")[1].split("/")
-                        if parts and parts[0].isdigit():
-                            item_id = parts[0]
-                            break
-                
-                if not item_id:
-                    parts = [p for p in mod_page.split("/") if p.isdigit()]
-                    if parts:
-                        item_id = parts[0]
-                    else:
-                        print(f"Could not extract mod ID for {mod_name}")
-                        continue
-                
-                api_url = f"https://gamebanana.com/apiv11/Mod/{item_id}?_csvProperties=_sVersion"
-                headers = {
-                    'User-Agent': 'CrossPatch/1.0.6',
-                    'Accept': 'application/json'
-                }
-                
-                response = requests.get(api_url, headers=headers)
-                response.raise_for_status()
-                item_data = response.json()
-                
-                gb_version = item_data.get("_sVersion")
                 if not gb_version:
                     print(f"No version info found for {mod_name}")
                     continue
-                
                 if Util.is_newer_version(mod_version, gb_version):
-                    updates[mod_name] = {
+                    updates[mod_folder_name] = {
+                        'name': mod_name,
                         'current': mod_version,
                         'new': gb_version,
-                        'url': mod_page
+                        'url': mod_page,
+                        'folder_name': mod_folder_name
                     }
                     print(f"Update found for {mod_name}: {mod_version} -> {gb_version}")
                 
@@ -946,9 +973,15 @@ class CrossPatchWindow(TkinterDnD.Tk):
                 print(f"Error checking {mod_name}: {str(e)}")
                 continue
         
-        # If updates were found, schedule the UI update on the main thread.
+        self.updatable_mods = updates
+        
+        # Schedule the UI update on the main thread.
+        self.after(0, self._update_treeview)
+
         if updates:
-            self.after(0, lambda: UpdateListWindow(self, updates))
+            print(f"Found {len(updates)} mod(s) with available updates.")
+            if manual_check:
+                self.after(0, lambda: messagebox.showinfo("Updates Found", f"{len(updates)} mod(s) have updates available and are now highlighted in green.", parent=self))
         else:
             print("No mod updates found.")
             if manual_check:
@@ -961,7 +994,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
             return
         
         tree_id = sel[0]
-        display_name = self.tree.item(tree_id, "values")[1]
+        display_name = self.tree.item(tree_id, "values")[2]
         
         mod_folder = None
         mod_info = None
@@ -982,75 +1015,25 @@ class CrossPatchWindow(TkinterDnD.Tk):
             return
             
         try:
-            # (Hopefully) supported URLS:
-            # https://gamebanana.com/mods/something
-            # https://gamebanana.com/wips/something
-            # https://gamebanana.com/updates/something
-            
-            item_type = None
-            item_id = None
-            
-            for type_path in ["mods", "wips", "updates"]:
-                if f"/{type_path}/" in mod_page:
-                    parts = mod_page.split(f"/{type_path}/")[1].split("/")
-                    if parts and parts[0].isdigit():
-                        item_type = type_path
-                        item_id = parts[0]
-                        break
-            
-            if not item_id:
-                parts = [p for p in mod_page.split("/") if p.isdigit()]
-                if parts:
-                    item_id = parts[0]
-                    item_type = "mods"  # Default to mods because who the fuck uses anything else
-                else:
-                    messagebox.showwarning("Update Check", "I can't find the ID fix this shit")
-                    return
+            # Use the new centralized function to get the version
+            gb_version = Util.get_gb_mod_version(mod_page)
+            if not gb_version:
+                messagebox.showwarning("Update Check", "Could not find version information for this mod on GameBanana.", parent=self)
+                return
 
-            print(f"Checking {item_type} ID: {item_id}")
-            
-    
-            api_url = f"https://gamebanana.com/apiv11/Mod/{item_id}?_csvProperties=_sVersion"
-            print(f"Making request to: {api_url}")
-            
-            headers = {
-                'User-Agent': 'CrossPatch/1.0.7',
-                'Accept': 'application/json'
-            }
-            
-            response = requests.get(api_url, headers=headers)
-            print(f"Response status code: {response.status_code}")
-            print(f"Response headers: {response.headers}")
-            print(f"Response content: {response.text[:200]}...")  # Print first 200 chars
-            
-            response.raise_for_status()
-            
-            try:
-                item_data = response.json()
-                print(f"Parsed JSON data: {item_data}")
-                
-                # Get the version
-                gb_version = item_data.get("_sVersion")
-                if not gb_version:
-                    messagebox.showwarning("Update Check", "Could not find _sVersion in API response")
-                    return
-                    
-                print(f"Found version: {gb_version}")
-            except ValueError as e:
-                print(f"Failed to parse JSON response. Full response:\n{response.text}")
-                raise Exception(f"Failed to parse Gamebanana API response: {str(e)}")
+            print(f"Found version: {gb_version}")
             local_version = mod_info.get("version", "1.0")
             
             if Util.is_newer_version(local_version, gb_version):
-                self.show_mod_update_prompt(mod_page, display_name, local_version, gb_version)
+                self.show_mod_update_prompt(mod_page, display_name, local_version, gb_version, mod_folder)
             else:
-                messagebox.showinfo("Update Check", f"{display_name} is up to date (v{local_version})")
+                messagebox.showinfo("No Updates Found", f"'{display_name}' is already up to date (v{local_version}).", parent=self)
                 
         except Exception as e:
-            messagebox.showerror("Update Check Error", f"Failed to check for updates: {str(e)}")
+            messagebox.showerror("Update Check Error", f"Failed to check for updates: {str(e)}", parent=self)
             
-    def show_mod_update_prompt(self, mod_page, mod_name, current_version, new_version):
-        ModUpdatePromptWindow(self, mod_page, mod_name, current_version, new_version)
+    def show_mod_update_prompt(self, mod_page, mod_name, current_version, new_version, mod_folder_name):
+        ModUpdatePromptWindow(self, mod_page, mod_name, current_version, new_version, mod_folder_name)
 
     def edit_selected_mod_info(self):
         print("Editing mod info.json")
@@ -1060,7 +1043,7 @@ class CrossPatchWindow(TkinterDnD.Tk):
         tree_id = sel[0]
         # The tree_id is the folder name
         folder_name = tree_id
-        display_name = self.tree.item(tree_id, "values")[1]
+        display_name = self.tree.item(tree_id, "values")[2]
 
         mod_folder = os.path.join(self.cfg["mods_folder"], folder_name)
         info_path  = os.path.join(mod_folder, "info.json")
