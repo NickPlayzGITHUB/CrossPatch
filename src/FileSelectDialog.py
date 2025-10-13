@@ -53,11 +53,16 @@ class FileSelectDialog(tk.Toplevel):
         self.grab_set()
 
         self.item_data = item_data
-        mod_name = self.item_data.get('_sName', 'Unknown Mod')
-        files_data = self.item_data.get('_aFiles', [])
+        self.mod_name = self.item_data.get('_sName', 'Unknown Mod')
+        # Sort files by date added, newest first
+        self.files_data = sorted(
+            self.item_data.get('_aFiles', []),
+            key=lambda f: f.get('_tsDateAdded', 0),
+            reverse=True
+        )
 
-        self.title(f"Download Options for '{mod_name}'")
-        self.geometry("950x600")
+        self.title(f"Download Options for '{self.mod_name}'")
+        self.geometry("1100x600")
         self.result = None
 
         # --- Main Paned Window Layout ---
@@ -109,26 +114,29 @@ class FileSelectDialog(tk.Toplevel):
         paned_window.add(right_pane, weight=2)
 
         # File List Treeview
-        cols = ("file", "size", "date", "desc")
+        cols = ("file", "version", "size", "date", "desc")
         self.tree = ttk.Treeview(right_pane, columns=cols, show="headings", selectmode="browse")
         self.tree.heading("file", text="File Name")
+        self.tree.heading("version", text="Version")
         self.tree.heading("size", text="Size")
         self.tree.heading("date", text="Date Added")
         self.tree.heading("desc", text="Description")
 
         self.tree.column("file", width=220, anchor=tk.W)
+        self.tree.column("version", width=80, anchor=tk.CENTER)
         self.tree.column("size", width=80, anchor=tk.E)
         self.tree.column("date", width=120, anchor=tk.CENTER)
         self.tree.column("desc", width=250, anchor=tk.W)
 
-        for i, file_info in enumerate(files_data):
+        for i, file_info in enumerate(self.files_data):
             file_name = file_info.get('_sFile', 'N/A')
+            file_version = file_info.get('_sVersion', '') # GameBanana API includes this field
             file_size_bytes = file_info.get('_nFilesize', 0)
             file_size_mb = f"{file_size_bytes / (1024*1024):.2f} MB" if file_size_bytes > 0 else "N/A"
             timestamp = file_info.get('_tsDateAdded', 0)
             date_added = datetime.datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M') if timestamp > 0 else "N/A"
             description = file_info.get('_sDescription', '')
-            self.tree.insert("", tk.END, iid=i, values=(file_name, file_size_mb, date_added, description))
+            self.tree.insert("", tk.END, iid=i, values=(file_name, file_version, file_size_mb, date_added, description))
 
         tree_scrollbar = ttk.Scrollbar(right_pane, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=tree_scrollbar.set)
@@ -138,7 +146,7 @@ class FileSelectDialog(tk.Toplevel):
         self.tree.bind("<Double-1>", self.on_download)
 
         # Select the first (usually latest/main) file by default
-        if files_data:
+        if self.files_data:
             self.tree.selection_set(self.tree.get_children()[0])
 
         # --- Bottom Buttons ---
@@ -176,14 +184,8 @@ class FileSelectDialog(tk.Toplevel):
             img_data = response.content
             img = Image.open(BytesIO(img_data))
             
-            # Resize image to fit the pane width (e.g., 340px) while maintaining aspect ratio
-            w, h = img.size
-            max_width = 340
-            if w > max_width:
-                ratio = max_width / w
-                new_w, new_h = max_width, int(h * ratio)
-                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
+            # Resize image to fit within a 340x200 box while maintaining aspect ratio
+            img.thumbnail((340, 200), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img)
             
             # Update the UI from the main thread
@@ -204,10 +206,9 @@ class FileSelectDialog(tk.Toplevel):
             messagebox.showwarning("No Selection", "Please select a file to download.", parent=self)
             return
 
-        files_data = self.item_data.get('_aFiles', [])
-        # The IID of the tree item is its index in the original files_data list
+        # The IID of the tree item is its index in the sorted self.files_data list
         selected_index = int(selected_item[0])
-        self.result = files_data[selected_index]
+        self.result = self.files_data[selected_index]
         self.destroy()
 
     def get_selection(self):
