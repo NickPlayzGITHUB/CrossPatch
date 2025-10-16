@@ -7,6 +7,7 @@ import urllib.request
 import webbrowser
 import platform
 import re
+import sys
 import tkinter as tk
 from tkinter import messagebox
 
@@ -116,6 +117,8 @@ def get_gb_item_data_from_url(url):
     except json.JSONDecodeError as e:
         raise ValueError(f"Could not parse API response: {e}")
 
+def is_packaged():
+    return getattr(sys, 'frozen', False) or "__compiled__" in globals()
 def get_gb_mod_version(mod_page_url):
     """
     Fetches the latest version of a mod from the GameBanana API given its page URL.
