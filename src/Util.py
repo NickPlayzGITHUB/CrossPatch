@@ -34,24 +34,25 @@ https://coderslegacy.com/tkinter-center-window-on-screen/
 '''
 def center_window(root):
     """Centers a tkinter window on the screen, preserving its current size."""
-    root.update_idletasks()  # Update geometry info
+    if platform.system() == "Windows":
+        root.update_idletasks()  # Update geometry info
 
-    # Get the window's requested size from its geometry string (e.g., "1100x600")
-    # This is more reliable than winfo_width/height which might not be updated yet.
-    geom_str = root.geometry()
-    try:
-        width, height = map(int, geom_str.split('+')[0].split('x'))
-    except (ValueError, IndexError):
-        # Fallback if geometry string is unusual
-        width = root.winfo_width()
-        height = root.winfo_height()
+        # Get the window's requested size from its geometry string (e.g., "1100x600")
+        # This is more reliable than winfo_width/height which might not be updated yet.
+        geom_str = root.geometry()
+        try:
+            width, height = map(int, geom_str.split('+')[0].split('x'))
+        except (ValueError, IndexError):
+            # Fallback if geometry string is unusual
+            width = root.winfo_width()
+            height = root.winfo_height()
  
-    screen_width = root.winfo_screenwidth()
-    screen_height = root.winfo_screenheight()
-    x = (screen_width // 2) - (width // 2)
-    y = (screen_height // 2) - (height // 2)
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        x = (screen_width // 2) - (width // 2)
+        y = (screen_height // 2) - (height // 2)
  
-    root.geometry(f'{width}x{height}+{x}+{y}')
+        root.geometry(f'{width}x{height}+{x}+{y}')
 
 def get_gb_item_details_from_url(url):
     """
