@@ -3,16 +3,17 @@ import json
 import requests
 import shutil
 import subprocess
+import zipfile
 import urllib.request
 import webbrowser
 import platform
 import re
 import sys
-import tkinter as tk
-from tkinter import messagebox
+import threading
+from PySide6.QtCore import QEvent
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from Constants import UPDATE_URL, APP_VERSION, STEAM_APP_ID
-from DownloadManager import DownloadManager
 from Config import CONFIG_DIR
 
 # --- Handle optional archive dependencies for UE4SS install ---
@@ -22,37 +23,75 @@ try:
 except ImportError:
     PY7ZR_SUPPORT = False
 
+class ModListFetchEvent(QEvent):
+    EVENT_TYPE = QEvent.Type(QEvent.User + 1)
+    def __init__(self, mods_data):
+        super().__init__(self.EVENT_TYPE)
+        self.mods_data = mods_data
+
+
 try:
     import rarfile
     RARFILE_SUPPORT = True
 except ImportError:
     RARFILE_SUPPORT = False
 
-'''
-Code from:
-https://coderslegacy.com/tkinter-center-window-on-screen/
-'''
-def center_window(root):
-    """Centers a tkinter window on the screen, preserving its current size."""
-    if platform.system() == "Windows":
-        root.update_idletasks()  # Update geometry info
+def is_packaged():
+    """Checks if the application is running as a packaged executable."""
+    return getattr(sys, 'frozen', False) or "__compiled__" in globals()
 
-        # Get the window's requested size from its geometry string (e.g., "1100x600")
-        # This is more reliable than winfo_width/height which might not be updated yet.
-        geom_str = root.geometry()
-        try:
-            width, height = map(int, geom_str.split('+')[0].split('x'))
-        except (ValueError, IndexError):
-            # Fallback if geometry string is unusual
-            width = root.winfo_width()
-            height = root.winfo_height()
- 
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
-        x = (screen_width // 2) - (width // 2)
-        y = (screen_height // 2) - (height // 2)
- 
-        root.geometry(f'{width}x{height}+{x}+{y}')
+def find_assets_dir(max_up_levels=4, verbose=False):
+    """
+    Finds the 'assets' directory by searching from multiple candidate base paths.
+    This is a robust method to handle different execution contexts like running
+    from source, or as a packaged application (Nuitka, PyInstaller).
+    """
+    candidates = []
+
+    if is_packaged():
+        candidates.append(os.path.dirname(sys.executable))
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(sys._MEIPASS)
+    try:
+        candidates.append(os.path.dirname(os.path.abspath(sys.argv[0])))
+    except Exception:
+        pass
+    try:
+        file_dir = os.path.abspath(os.path.dirname(__file__))
+        candidates.append(file_dir)
+        candidates.append(os.path.abspath(os.path.join(file_dir, "..")))
+    except NameError:
+        pass
+    candidates.append(os.getcwd())
+
+    seen = set()
+    filtered_candidates = [c for c in candidates if c and c not in seen and not seen.add(c)]
+
+    for base in filtered_candidates:
+        for up in range(max_up_levels + 1):
+            check_path = os.path.abspath(os.path.join(base, *(['..'] * up)))
+            assets_path = os.path.join(check_path, "assets")
+            if os.path.isdir(assets_path):
+                if verbose:
+                    print(f"[find_assets_dir] Found assets at: {assets_path} (base='{base}', up={up})")
+                return assets_path
+
+    print("[find_assets_dir] WARNING: Could not find assets directory. Falling back to a default path.")
+    return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "assets")
+
+def center_window_pyside(window):
+    """Centers a PySide6 window on the screen. This is primarily for Windows."""
+    if platform.system() != "Windows":
+        return # Centering is often handled better by the WM on Linux/macOS
+
+    screen = QApplication.primaryScreen()
+    if not screen:
+        return
+    screen_geometry = screen.availableGeometry()
+    window_geometry = window.frameGeometry()
+    center_point = screen_geometry.center()
+    window_geometry.moveCenter(center_point)
+    window.move(window_geometry.topLeft())
 
 def get_gb_item_details_from_url(url):
     """
@@ -118,8 +157,6 @@ def get_gb_item_data_from_url(url):
     except json.JSONDecodeError as e:
         raise ValueError(f"Could not parse API response: {e}")
 
-def is_packaged():
-    return getattr(sys, 'frozen', False) or "__compiled__" in globals()
 def get_gb_mod_version(mod_page_url):
     """
     Fetches the latest version of a mod from the GameBanana API given its page URL.
@@ -148,6 +185,121 @@ def get_gb_mod_version(mod_page_url):
     item_data = response.json()
     return item_data.get("_sVersion")
 
+def get_gb_mod_list(game_id, sort='default', page=1, search_query=None, category_id=None):
+    """
+    Fetches a list of mods for a given game from the GameBanana API.
+    """
+    base_url = f"https://gamebanana.com/apiv11/Game/{game_id}/Subfeed"
+    params = {
+        '_sSort': sort,
+        '_nPage': page,
+        '_csvProperties': '_sName,_sProfileUrl,_nLikeCount,_nViewCount,_nTotalDownloads,_aSubmitter,_aPreviewMedia,_aFiles'
+    }
+    # The API returns a 400 Bad Request if _csvModelInclusions is present when _sSort is 'search'.
+    if sort != 'search':
+        params['_csvModelInclusions'] = 'Mod,Wip'
+
+    # Per user suggestion, use _sName for searching on the Subfeed endpoint.
+    if search_query:
+        params['_sName'] = f"*{search_query}*"
+    
+    if category_id:
+        params['_idCategory'] = category_id
+
+    headers = {'User-Agent': f'CrossPatch/{APP_VERSION}', 'Accept': 'application/json'}
+    print(f"[DEBUG] Fetching GB mod list. URL: {base_url}, Params: {params}")
+
+    try:
+        # Using a prepared request to easily log the full URL
+        req = requests.Request('GET', base_url, params=params, headers=headers)
+        prepared = req.prepare()
+        print(f"[DEBUG] Full request URL: {prepared.url}")
+
+        response = requests.get(base_url, params=params, headers=headers, timeout=15)
+        print(f"[DEBUG] GB API Response Status: {response.status_code}")
+        response.raise_for_status()
+        data = response.json()
+        print(f"[DEBUG] GB API Response JSON: {json.dumps(data, indent=2)}")
+        return data.get('_aRecords', []), data.get('_aMetadata', {})
+    except requests.RequestException as e:
+        raise ConnectionError(f"Could not connect to GameBanana Subfeed API: {e}")
+
+def get_gb_top_mods(game_id, page=1):
+    """Fetches Top mods for a game from the GameBanana API."""
+    base_url = f"https://gamebanana.com/apiv11/Game/{game_id}/TopSubs"
+    params = {
+        '_nPage': page,
+        '_csvProperties': '_sName,_sProfileUrl,_nLikeCount,_nViewCount,_nTotalDownloads,_aSubmitter,_aPreviewMedia,_aFiles'
+    }
+    headers = {'User-Agent': f'CrossPatch/{APP_VERSION}', 'Accept': 'application/json'}
+    print(f"[DEBUG] Fetching GB Top mods. URL: {base_url}, Params: {params}")
+    try:
+        response = requests.get(base_url, params=params, headers=headers, timeout=15)
+        response.raise_for_status()
+        # This endpoint returns a simple list, so we create a dummy metadata object.
+        return response.json()
+    except requests.RequestException as e:
+        raise ConnectionError(f"Could not connect to GameBanana TopSubs API: {e}")
+
+def get_gb_featured_mods(game_id, page=1):
+    """Fetches Featured mods for a game from the GameBanana API."""
+    base_url = "https://gamebanana.com/apiv11/Util/List/Featured"
+    params = {
+        '_nPage': page,
+        '_idGameRow': game_id,
+        '_csvProperties': '_sName,_sProfileUrl,_nLikeCount,_nViewCount,_nTotalDownloads,_aSubmitter,_aPreviewMedia,_aFiles'
+    }
+    headers = {'User-Agent': f'CrossPatch/{APP_VERSION}', 'Accept': 'application/json'}
+    print(f"[DEBUG] Fetching GB Featured mods. URL: {base_url}, Params: {params}")
+    try:
+        response = requests.get(base_url, params=params, headers=headers, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        # This endpoint returns a dictionary with _aRecords and _aMetadata
+        return data.get('_aRecords', [])
+    except requests.RequestException as e:
+        raise ConnectionError(f"Could not connect to GameBanana Featured API: {e}")
+
+def get_gb_spotlight_mods(game_id, page=1):
+    """Fetches Community Spotlight mods for a game from the GameBanana API."""
+    base_url = f"https://gamebanana.com/apiv11/Game/{game_id}/CommunitySpotlight"
+    params = {
+        '_nPage': page,
+        '_csvProperties': '_sName,_sProfileUrl,_nLikeCount,_nViewCount,_nTotalDownloads,_aSubmitter,_aPreviewMedia,_aFiles'
+    }
+    headers = {'User-Agent': f'CrossPatch/{APP_VERSION}', 'Accept': 'application/json'}
+    print(f"[DEBUG] Fetching GB Spotlight mods. URL: {base_url}, Params: {params}")
+    try:
+        response = requests.get(base_url, params=params, headers=headers, timeout=15)
+        response.raise_for_status()
+        # This endpoint returns a dict with a single key (e.g., "Mod") containing the list.
+        data = response.json()
+        # The response is a dict with a single key (e.g., "Mod") containing the list
+        if isinstance(data, dict) and len(data) == 1:
+            return list(data.values())[0]
+        # Sometimes it might just be a list
+        elif isinstance(data, list):
+            return data
+        else:
+            print(f"[DEBUG] Unexpected Spotlight API response format: {data}")
+            return []
+
+    except requests.RequestException as e:
+        raise ConnectionError(f"Could not connect to GameBanana Spotlight API: {e}")
+
+def fetch_specialized_lists(game_id, sort, page):
+    """Helper to call specialized list endpoints and normalize their output."""
+    if sort == "Featured":
+        mods, metadata = get_gb_featured_mods(game_id, page), {} # Featured API doesn't give metadata
+        # Manually set is_complete to False to allow pagination, as this endpoint supports it.
+        metadata['_bIsComplete'] = False if mods else True
+    elif sort == "Community Spotlight":
+        mods, metadata = get_gb_spotlight_mods(game_id, page), {'_bIsComplete': True} # No pagination
+    else: # Default to "Top"
+        mods, metadata = get_gb_top_mods(game_id, page), {'_bIsComplete': True} # No pagination
+    return mods, metadata
+
+
 def fetch_remote_version():
     print("Fetching remote version from GitHub")
     try:
@@ -172,7 +324,7 @@ def is_newer_version(local, remote):
     rv += [0] * (length - len(rv))
     return rv > lv
 
-def check_for_updates(root):
+def check_for_updates_pyside(parent_window):
     print("Checking for updates...")
     remote_info = fetch_remote_version()
     if not remote_info:
@@ -181,19 +333,36 @@ def check_for_updates(root):
     remote_version = remote_info.get("tag_name")
     if remote_version and is_newer_version(APP_VERSION, remote_version):
         print(f"CrossPatch {APP_VERSION} is outdated, Latest Version is {remote_version}")
-        root.after(0, lambda: show_update_prompt(root, remote_version, remote_info))
+        # The updater needs to be called from the main thread, but parent_window might not have .after
+        # The main window handles its own threading for this now.
 
-def show_update_prompt(root, remote_version, remote_info):
+def show_update_prompt_pyside(parent, remote_version, remote_info):
     from Updater import Updater # Local import to avoid circular dependency
-    if messagebox.askyesno(
+    reply = QMessageBox.question(
+        parent,
         "Update Available",
         f"A new version of CrossPatch is available!\n\n"
         f"  Your Version: {APP_VERSION}\n"
         f"  Latest Version: {remote_version}\n\n"
         "Would you like to download and install it now?",
-        parent=root
-    ):
-        Updater(root, remote_info).start_update()
+    )
+    if reply == QMessageBox.Yes:
+        Updater(parent, remote_info).start_update()
+
+def synchronize_priority_with_disk(current_priority, mods_on_disk):
+    """
+    Synchronizes the mod priority list with the mods actually present on the disk.
+    - Removes mods from the priority list that are no longer on disk.
+    - Appends newly found mods to the end of the priority list.
+    - Preserves the order of existing mods.
+    """
+    # Remove mods that are no longer on disk
+    synced_priority = [mod for mod in current_priority if mod in mods_on_disk]
+    # Add new mods that are not in the priority list yet
+    for mod in mods_on_disk:
+        if mod not in synced_priority:
+            synced_priority.append(mod)
+    return synced_priority
 
 def list_mod_folders(path):
     if not os.path.isdir(path):
@@ -253,13 +422,13 @@ def clean_mods_folder(cfg):  # enhanced refresh
     # Clean Pak mods folder
     pak_dst = get_game_mods_folder(cfg)
     if os.path.isdir(pak_dst):
-        # This regex matches folders that start with a number and a dot, e.g., "0.MyMod"
+        # This regex matches folders that start with 3+ digits and a dot, e.g., "000.MyMod"
         # This ensures we only delete folders managed by CrossPatch.
-        managed_folder_pattern = re.compile(r"^\d+\..+")
+        managed_folder_pattern = re.compile(r"^\d{3,}\..+")
         for item in os.listdir(pak_dst):
             item_path = os.path.join(pak_dst, item)
             try:
-                if os.path.isdir(item_path) and managed_folder_pattern.match(item):
+                if os.path.isdir(item_path) and managed_folder_pattern.search(item):
                     shutil.rmtree(item_path)
             except Exception as e:
                 print(f"Error removing directory {item} from pak mods: {e}")
@@ -346,6 +515,8 @@ def launch_game():
 
 
 def _ensure_ue4ss_installed(cfg, root_window):
+    from src.DownloadManager import DownloadManager # Local import to break circular dependency
+
     """Checks if UE4SS is installed and installs it if not."""
     win64_path = os.path.join(cfg["game_root"], "UNION", "Binaries", "Win64")
     ue4ss_folder = os.path.join(win64_path, "ue4ss")
@@ -356,14 +527,15 @@ def _ensure_ue4ss_installed(cfg, root_window):
         return True # UE4SS is present
 
     # UE4SS is not installed, so we need to download it.
-    if not messagebox.askyesno(
+    reply = QMessageBox.question(
+        root_window,
         "UE4SS Not Found",
         "A UE4SS-based mod requires UE4SS to be installed.\n\n"
         "CrossPatch can automatically download and install it for you. "
         "Do you want to proceed?",
-        parent=root_window
-    ):
-        messagebox.showwarning("Mod Not Enabled", "The mod was not enabled because UE4SS is required.", parent=root_window)
+    )
+    if reply != QMessageBox.Yes:
+        QMessageBox.warning(root_window, "Mod Not Enabled", "The mod was not enabled because UE4SS is required.")
         return False
 
     ue4ss_url = "https://gamebanana.com/tools/20876"
@@ -375,14 +547,21 @@ def _ensure_ue4ss_installed(cfg, root_window):
     os.makedirs(temp_download_dir, exist_ok=True)
     
     try:
-        dm = DownloadManager(root_window, temp_download_dir)
-        # This is a synchronous call for simplicity, as the mod can't be enabled until this is done.
-        dm.download_and_extract_to(ue4ss_url, win64_path)
+        # This needs to be a synchronous operation for this specific case.
+        # We'll create a dummy on_complete event to wait for.
+        completion_event = threading.Event()
+        dm = DownloadManager(root_window, temp_download_dir, on_complete=completion_event.set)
+        # The download_mod_from_url method doesn't exist in the PySide version,
+        # let's use the more generic download_specific_file after getting item data.
+        item_data = get_gb_item_data_from_url(ue4ss_url)
+        file_to_download = max(item_data.get('_aFiles', []), key=lambda f: f.get('_nFilesize', 0))
+        dm.download_specific_file(file_to_download, item_data.get('_sName', 'UE4SS'), extract_path_override=win64_path)
+        completion_event.wait() # Block until download/extract is finished
         print("UE4SS installation completed.")
         shutil.rmtree(temp_download_dir, ignore_errors=True)
         return True
     except Exception as e:
-        messagebox.showerror("UE4SS Installation Failed", f"Failed to download or install UE4SS. The mod will not be enabled.\n\nError: {e}", parent=root_window)
+        QMessageBox.critical(root_window, "UE4SS Installation Failed", f"Failed to download or install UE4SS. The mod will not be enabled.\n\nError: {e}")
         shutil.rmtree(temp_download_dir, ignore_errors=True)
         return False
 
@@ -423,7 +602,7 @@ def enable_mod(mod_name, cfg, priority, profile_data):
 
     profile_data["enabled_mods"][mod_name] = True
 
-def enable_mod_with_ui(mod_name, cfg, priority, root_window, profile_data):
+def enable_mod_with_ui_pyside(mod_name, cfg, priority, root_window, profile_data):
     """Wrapper for enable_mod that handles UI interactions like the UE4SS check."""
     mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
     mod_type = mod_info.get("mod_type", "pak")
@@ -437,3 +616,74 @@ def enable_mod_with_ui(mod_name, cfg, priority, root_window, profile_data):
 
     print(f"Enabling {mod_name} (type: {mod_type}) with priority {priority}")
     enable_mod(mod_name, cfg, priority, profile_data)
+
+def enable_mods_from_priority(priority_list, enabled_mods_dict, cfg, root_window, profile_data):
+    """
+    Iterates through the master priority list and enables mods that are marked as enabled,
+    assigning them a priority based on their position in the list.
+    """
+    # This counter is only for PAK mods to ensure they are prefixed correctly.
+    enabled_pak_mod_count = 0
+    for mod_name in priority_list:
+        if enabled_mods_dict.get(mod_name, False):
+            mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
+            mod_type = mod_info.get("mod_type", "pak")
+
+            # The priority number is only relevant for pak mods.
+            priority_for_mod = enabled_pak_mod_count if mod_type == "pak" else 0
+            enable_mod_with_ui_pyside(mod_name, cfg, priority_for_mod, root_window, profile_data)
+            if mod_type == "pak":
+                enabled_pak_mod_count += 1
+
+def extract_archive(archive_path, dest_path, progress_signal=None):
+    """
+    Extracts an archive to a destination path and handles nested folders.
+
+    Args:
+        archive_path (str): The path to the archive file.
+        dest_path (str): The destination directory for extraction.
+        progress_signal (Signal, optional): A PySide6 signal to emit progress updates.
+    """
+    print(f"Starting extraction of '{os.path.basename(archive_path)}' to '{dest_path}'")
+    # Ensure the destination directory exists and is empty for a clean extraction
+    if os.path.isdir(dest_path):
+        print(f"Destination '{dest_path}' exists. Removing for clean extraction.")
+        shutil.rmtree(dest_path)
+    os.makedirs(dest_path, exist_ok=True)
+
+    archive_format = os.path.splitext(archive_path)[1].lower()
+    print(f"Detected archive format: {archive_format}")
+
+    if progress_signal: progress_signal.emit("Extracting...")
+
+    if archive_format == '.zip':
+        print("Using zipfile to extract.")
+        with zipfile.ZipFile(archive_path, 'r') as z_ref:
+            z_ref.extractall(dest_path)
+    elif archive_format == '.7z' and PY7ZR_SUPPORT:
+        print("Using py7zr to extract.")
+        with py7zr.SevenZipFile(archive_path, 'r') as z_ref:
+            z_ref.extractall(path=dest_path)
+    elif archive_format == '.rar' and RARFILE_SUPPORT:
+        print("Using rarfile to extract.")
+        rarfile.RarFile(archive_path).extractall(path=dest_path)
+    else:
+        # Fallback to shutil.unpack_archive for other potential formats
+        try:
+            print("Using shutil.unpack_archive as a fallback.")
+            shutil.unpack_archive(archive_path, dest_path)
+        except shutil.ReadError:
+            raise NotImplementedError(f"Unsupported or corrupt archive format: {archive_format}")
+
+    print("Initial extraction complete.")
+
+    # --- Handle archives with a single nested folder ---
+    print("Checking for nested folder structure...")
+    items = os.listdir(dest_path)
+    if len(items) == 1 and os.path.isdir(os.path.join(dest_path, items[0])):
+        print("Single nested folder detected. Correcting structure...")
+        nested_folder_path = os.path.join(dest_path, items[0])
+        for item_name in os.listdir(nested_folder_path):
+            shutil.move(os.path.join(nested_folder_path, item_name), dest_path)
+        os.rmdir(nested_folder_path)
+        print(f"Corrected nested folder structure for '{os.path.basename(dest_path)}'.")

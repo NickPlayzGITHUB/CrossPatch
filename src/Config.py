@@ -5,7 +5,7 @@ import sys
 import ctypes
 import re
 if platform.system() == "Windows": import winreg
-from tkinter import filedialog, messagebox, Tk
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 import Util
 
@@ -34,11 +34,14 @@ def default_mods_folder():
         os.makedirs(path, exist_ok=True)
         return path
     
-    root = Tk()
-    root.withdraw()
-    messagebox.showinfo("Welcome to CrossPatch!", "Please select a folder to store your mods.\n Note: this is NOT your ~mods folder", parent=root)
-    folder = filedialog.askdirectory(title="Select a folder for your mods", parent=root)
-    root.destroy()
+    # Ensure a QApplication instance exists
+    app = QApplication.instance() or QApplication(sys.argv)
+    
+    QMessageBox.information(None, "Welcome to CrossPatch!", "Please select a folder to store your mods.\nNote: this is NOT your game's ~mods folder.")
+    folder = QFileDialog.getExistingDirectory(
+        None,
+        "Select a folder to store your mods"
+    )
     if not folder:
         sys.exit("No mods folder selected. Exiting.")
     return folder
@@ -64,11 +67,14 @@ def default_game_folder():
 
     if not default_root:
         # Auto-detection failed, prompt the user.
-        root = Tk()
-        root.withdraw()
-        messagebox.showinfo("Setup: Game Directory", "Could not automatically find Sonic Racing Crossworlds. Please select the game's installation folder.", parent=root)
-        folder = filedialog.askdirectory(title="Select Sonic Racing Crossworlds Folder", parent=root)
-        root.destroy()
+        app = QApplication.instance() or QApplication(sys.argv)
+        QMessageBox.information(
+            None,
+            "Setup: Game Directory",
+            "Could not automatically find Sonic Racing Crossworlds. Please select the game's installation folder."
+        )
+        folder = QFileDialog.getExistingDirectory(None, "Select Sonic Racing Crossworlds Folder")
+
         if not folder:
             sys.exit("No game folder selected. Exiting.")
         default_root = folder
@@ -163,13 +169,16 @@ def load_config():
             print(f"Error loading config.json: {e}")
             corrupt_path = os.path.join(CONFIG_DIR, "config.json.corrupt")
             try:
+                app = QApplication.instance() or QApplication(sys.argv)
                 os.rename(CONFIG_FILE, corrupt_path)
-                messagebox.showwarning(
+                QMessageBox.warning(
+                    None,
                     "Configuration Error",
                     f"Your config.json file was corrupt and has been backed up to:\n{corrupt_path}\n\nA new configuration will be created."
                 )
             except Exception as backup_error:
-                messagebox.showerror(
+                QMessageBox.critical(
+                    None,
                     "Configuration Error",
                     f"Your config.json file is corrupt, but could not be backed up.\n\nError: {backup_error}"
                 )

@@ -1,4 +1,3 @@
-
 import os
 import ctypes
 import threading
@@ -6,11 +5,18 @@ import platform
 import requests
 import subprocess
 import sys
-import tkinter as tk
+import json
 import shutil
-import zipfile
-from tkinter import filedialog, messagebox, ttk, simpledialog
-from tkinterdnd2 import TkinterDnD, DND_FILES
+
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
+    QTreeWidget, QTreeWidgetItem, QHeaderView, QPushButton, QLineEdit, QLabel, QStyle,
+    QFrame, QComboBox, QCheckBox, QMenu, QSplitter, QSpacerItem, QSizePolicy, QScrollArea,
+    QGridLayout,
+    QMessageBox, QFileDialog, QInputDialog
+)
+from PySide6.QtGui import QIcon, QAction, QFont, QDrag, QPixmap, QPainter, QColor, QDesktopServices, QImage, QDropEvent, QShortcut, QKeySequence
+from PySide6.QtCore import Qt, QMimeData, QPoint, Signal, QObject, QUrl, QSize, QThread, QTimer, QRunnable, QThreadPool, QEvent
 
 from Credits import CreditsWindow
 from ModUpdatePrompt import ModUpdatePromptWindow
@@ -20,356 +26,943 @@ from FileSelectDialog import FileSelectDialog
 from OneClickInstallDialog import OneClickInstallDialog
 from EditMod import EditModWindow
 from ProfileManager import ProfileManager
-from Tooltip import Tooltip
 import Config
 import Util
 from Constants import APP_TITLE, APP_VERSION
 
-# --- Handle optional archive dependencies ---
-try:
-    import py7zr
-    PY7ZR_SUPPORT = True
-except ImportError:
-    PY7ZR_SUPPORT = False
+class WorkerSignals(QObject):
+    """Defines signals available from a running worker thread."""
+    finished = Signal()
+    error = Signal(tuple)
+    result = Signal(object)
 
-try:
-    import rarfile
-    RARFILE_SUPPORT = True
-    if platform.system() == "Windows":
-        # --- Point rarfile to the bundled UnRAR.exe on Windows ---
-        if Util.is_packaged():
-            # Packaged app: UnRAR.exe is in the 'assets' folder next to the executable
-            unrar_path = os.path.join(os.path.dirname(sys.executable), 'assets', 'UnRAR.exe')
-        else:
-            # Development: UnRAR.exe is in the 'assets' folder in the project root
-            unrar_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'UnRAR.exe')
+# --- Worker for background image loading ---
+class ImageLoader(QRunnable):
+    """Worker thread for loading an image from a URL."""
+
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
+        self.signals = WorkerSignals()
+
+    def run(self):
+        """Downloads an image and emits it as a QPixmap."""
+        try:
+            response = requests.get(self.url, timeout=10)
+            response.raise_for_status()
+            image = QImage()
+            image.loadFromData(response.content)
+            self.signals.result.emit(image)
+        except Exception as e:
+            self.signals.error.emit((e, f"Failed to load image from {self.url}: {e}"))
+        finally:
+            self.signals.finished.emit()
+
+# --- Worker for fetching full mod details ---
+class ModDetailsLoader(QRunnable):
+    """Worker thread for fetching the full data for a single mod."""
+
+    def __init__(self, mod_data):
+        super().__init__()
+        self.mod_data = mod_data
+        self.signals = WorkerSignals()
+
+    def run(self):
+        """Fetches full mod data and emits it."""
+        try:
+            url = f"https://gamebanana.com/{self.mod_data.get('_sProfileUrl')}"
+            full_mod_data = Util.get_gb_item_data_from_url(url)
+            self.signals.result.emit(full_mod_data)
+        except Exception as e:
+            self.signals.error.emit((e, f"Failed to load details for {self.mod_data.get('_sName')}: {e}"))
+        finally:
+            self.signals.finished.emit()
+
+# --- Custom Mod Card Widget ---
+class ModCard(QFrame):
+    def __init__(self, mod_data, download_callback, parent=None):
+        super().__init__(parent)
+        self.mod_data = mod_data
+        self.download_callback = download_callback
+        self.worker = None # To hold a reference to the running worker
+
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setFixedWidth(220)
+        self.setFixedHeight(280)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+
+        # Image Label
+        self.image_label = QLabel("Loading...")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setFixedSize(210, 118) # 16:9 aspect ratio
+        self.image_label.setStyleSheet("background-color: #2a2a2a; border-radius: 3px;")
+        layout.addWidget(self.image_label)
+
+        # Mod Name
+        name = self.mod_data.get('_sName', 'N/A')
+        name_label = QLabel(name)
+        name_label.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        name_label.setWordWrap(True)
+        layout.addWidget(name_label)
+
+        # Author
+        author = self.mod_data.get('_aSubmitter', {}).get('_sName', 'N/A')
+        author_label = QLabel(f"by {author}")
+        layout.addWidget(author_label)
+
+        layout.addStretch()
+
+        # Stats (Likes/Downloads)
+        stats_layout = QHBoxLayout()
+        likes = self.mod_data.get('_nLikeCount', 0)
+        downloads = self.mod_data.get('_nTotalDownloads', 0)
+        stats_layout.addWidget(QLabel(f"👍 {likes}"))
+        stats_layout.addWidget(QLabel(f"📥 {downloads}"))
+        stats_layout.addStretch()
+        layout.addLayout(stats_layout)
+
+        # Download Button
+        download_btn = QPushButton(self.style().standardIcon(QStyle.SP_ArrowDown), " Download")
+        download_btn.clicked.connect(self.on_download_clicked)
+        layout.addWidget(download_btn)
+
+        self._load_image()
+
+    def _update_with_full_data(self, full_mod_data):
+        """Updates the card's internal data and then loads the image."""
+        self.mod_data = full_mod_data
+        self._load_image() # Now try loading the image again with the full data
+
+    def _load_image(self):
+        preview_media = self.mod_data.get('_aPreviewMedia', {})
+        images = preview_media.get('_aImages', [])
         
-        if os.path.exists(unrar_path):
-            rarfile.UNRAR_TOOL = unrar_path
-            print(f"Found bundled UnRAR at: {unrar_path}")
+        if not images:
+            # If image data is missing, it's likely from a minimal API response.
+            # Fetch the full details for this mod in the background.
+            if '_aPreviewMedia' not in self.mod_data:
+                print(f"[DEBUG] Missing preview media for '{self.mod_data.get('_sName')}'. Fetching full details.")
+                details_worker = ModDetailsLoader(self.mod_data)
+                details_worker.signals.result.connect(self._update_with_full_data)
+                QThreadPool.globalInstance().start(details_worker)
+                return # Stop here; the callback will re-trigger image loading.
+            self.image_label.setText("No Image")
+            return
+
+        # Use the 220px wide thumbnail from the API
+        image_url = f"{images[0].get('_sBaseUrl')}/{images[0].get('_sFile220')}"
+
+        self.worker = ImageLoader(image_url)
+        self.worker.signals.result.connect(self.on_image_loaded)
+        self.worker.signals.error.connect(self.on_image_load_failed)
+        # Use the global thread pool for efficiency
+        QThreadPool.globalInstance().start(self.worker)
+
+    def on_image_loaded(self, image):
+        if not image.isNull():
+            # Convert the thread-safe QImage to a QPixmap in the main thread
+            pixmap = QPixmap.fromImage(image)
+            self.image_label.setPixmap(pixmap.scaled(
+                self.image_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            ))
         else:
-            print("Bundled UnRAR.exe not found, falling back to system PATH.")
-    # On Linux/macOS, rarfile will look for 'unrar' in the system PATH.
-except ImportError:
-    RARFILE_SUPPORT = False
+            self.image_label.setText("Load Failed")
 
-def find_assets_dir(max_up_levels=4, verbose=False):
-    """
-    Finds the 'assets' directory by searching from multiple candidate base paths.
-    This is a robust method to handle different execution contexts like running
-    from source, or as a packaged application (Nuitka, PyInstaller).
-    """
-    candidates = []
+    def on_image_load_failed(self, error_info):
+        e, msg = error_info
+        print(msg)
+        self.image_label.setText("Load Failed")
 
-    # 1) If running in package (PyInstaller-style)
-    if Util.is_packaged():
-        candidates.append(os.path.dirname(sys.executable))
+    def on_download_clicked(self):
+        # Pass the full mod_data to avoid a second API call
+        self.download_callback(item_data=self.mod_data)
 
-    # 2) PyInstaller _MEIPASS (safe to check)
-    if hasattr(sys, "_MEIPASS"):
-        candidates.append(sys._MEIPASS)
-
-    # 3) The invoked executable/script
-    try:
-        argv0 = os.path.abspath(sys.argv[0])
-        candidates.append(os.path.dirname(argv0))
-    except Exception:
-        pass
-
-    # 4) This script's file location (useful for dev runs)
-    try:
-        file_dir = os.path.abspath(os.path.dirname(__file__))
-        candidates.append(file_dir)
-        candidates.append(os.path.abspath(os.path.join(file_dir, "..")))
-    except NameError:
-        pass
-
-    # 5) Current working directory
-    candidates.append(os.getcwd())
-
-    # De-duplicate while preserving order
-    seen = set()
-    filtered_candidates = [c for c in candidates if c and c not in seen and not seen.add(c)]
-
-    # For every candidate, look for 'assets' in that dir and up to parent levels
-    for base in filtered_candidates:
-        for up in range(max_up_levels + 1):
-            check_path = os.path.abspath(os.path.join(base, *(['..'] * up)))
-            assets_path = os.path.join(check_path, "assets")
-            if os.path.isdir(assets_path):
-                if verbose:
-                    print(f"[find_assets_dir] Found assets at: {assets_path} (base='{base}', up={up})")
-                return assets_path
-
-    # Fallback if no assets directory is found
-    print("[find_assets_dir] WARNING: Could not find assets directory. Falling back to a default path.")
-    return os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "assets")
-class CrossPatchWindow(TkinterDnD.Tk):
-    def on_drop_mod(self, event):
-        """Handles drag-and-drop of mods (folders or zips) onto the treeview."""
-        files = self.tk.splitlist(event.data)
-        mods_folder = self.cfg["mods_folder"]
-        
-        for file_path in files:
+    def stop(self):
+        """Safely stops any running background tasks."""
+        # Disconnect signals to prevent the worker from calling slots on this widget
+        # after it has been scheduled for deletion.
+        if self.worker:
             try:
-                if os.path.isdir(file_path):
-                    dest = os.path.join(mods_folder, os.path.basename(file_path))
-                    if not os.path.exists(dest):
-                        shutil.copytree(file_path, dest)
-                elif any(file_path.lower().endswith(ext) for ext in ['.zip', '.7z', '.rar']):
-                    # Use DownloadManager to handle extraction for consistency
-                    dm = DownloadManager(self, self.cfg["mods_folder"])
-                    mod_name = os.path.splitext(os.path.basename(file_path))[0]
-                    dest_path = os.path.join(self.cfg["mods_folder"], mod_name)
-                    if not os.path.exists(dest_path):
-                        dm._extract_archive(file_path, dest_path)
-            except rarfile.RarCannotExec:
-                if platform.system() == "Linux":
-                    messagebox.showerror(
-                        "RAR Extraction Failed",
-                        "To extract .rar files, please install the 'unrar' package using your distribution's package manager.\n\n"
-                        "For Debian/Ubuntu: sudo apt-get install unrar\n"
-                        "For Fedora: sudo dnf install unrar"
-                    )
-                else: # Windows or other
-                    import webbrowser
-                    if messagebox.askyesno(
-                        "RAR Extraction Failed",
-                        "Extracting .rar files requires the 'unrar' utility, which was not found.\n\n"
-                        "The bundled version may be missing or corrupted. Would you like to open the official download page?",
-                        icon='warning'
-                    ):
-                        webbrowser.open("https://www.rarlab.com/rar_add.htm")
-            except Exception as e:
-                messagebox.showerror("Error Adding Mod", f"Failed to add '{os.path.basename(file_path)}':\n{e}")
+                self.worker.signals.result.disconnect(self.on_image_loaded)
+                self.worker.signals.error.disconnect(self.on_image_load_failed)
+            except (RuntimeError, TypeError):
+                # This can happen if the signal is already disconnected or the worker finished.
+                pass
 
+class ModTreeWidget(QTreeWidget):
+    """A custom QTreeWidget that forces all drops to be insertions, not parenting."""
+    def dropEvent(self, event: QDropEvent):
+        if not self.selectedItems():
+            return
+
+        # Get the item being dragged
+        dragged_item = self.selectedItems()[0]
+        # Get the item at the drop position
+        target_item = self.itemAt(event.position().toPoint())
+
+        if target_item:
+            # Calculate the index to insert at (above the target)
+            drop_index = self.indexOfTopLevelItem(target_item)
+            # Take the dragged item out of the tree
+            taken_item = self.takeTopLevelItem(self.indexOfTopLevelItem(dragged_item))
+            # Insert it at the new position
+            self.insertTopLevelItem(drop_index, taken_item)
+            # Ensure the newly moved item is selected
+            self.setCurrentItem(taken_item)
+
+class CrossPatchWindow(QMainWindow):
+    # Signal to handle protocol URL from a non-GUI thread
+    protocol_url_received = Signal(str)
+    # Signal to safely update UI after background mod update check
+    mod_update_check_finished = Signal(dict, bool)
+
+    def __init__(self, instance_socket=None):
+        super().__init__()
+        self.instance_socket = instance_socket
+
+        # --- Core App Data ---
+        self.cfg = Config.config
+        self.profile_manager = ProfileManager(self.cfg)
+        self.updatable_mods = {}
+        self.active_download_manager = None # To hold a reference
+        self._resize_timer = None
+        self.assets_path = Util.find_assets_dir()
+
+        # --- Drag & Drop Data ---
+        self._drag_start_pos = None
+
+        # --- Window Setup ---
+        self.setWindowTitle(APP_TITLE)
+        self.setWindowIcon(QIcon(os.path.join(self.assets_path, 'CrossP.ico')))
+        
+        # Restore window size and position
+        geometry = self.cfg.get("window_geometry")
+        if geometry:
+            self.restoreGeometry(bytes.fromhex(geometry))
+        else:
+            self.resize(620, 750)
+            Util.center_window_pyside(self)
+
+        # --- Main Widget and Layout ---
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+
+        # --- Tabbed Interface ---
+        self.notebook = QTabWidget()
+        main_layout.addWidget(self.notebook)
+
+        self.mods_tab_frame = QWidget()
+        self.browse_tab_frame = QWidget()
+        self.settings_tab_frame = QWidget()
+
+        self.notebook.addTab(self.mods_tab_frame, "Installed Mods")
+        self.notebook.addTab(self.browse_tab_frame, "Browse Mods")
+        self.notebook.addTab(self.settings_tab_frame, "Settings")
+
+        # --- Build UI for each tab ---
+        self._create_mods_tab_ui()
+        self._create_browse_tab_ui()
+        self._create_settings_tab_ui()
+
+        # --- Bottom Buttons and Status Bar ---
+        self._create_bottom_bar()
+
+        # --- Hotkeys ---
+        search_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
+        # Only activate shortcut if the mods tab is visible
+        search_shortcut.activated.connect(self.on_search_hotkey)
+
+        # Connect signals after all relevant widgets have been created
+        self.notebook.currentChanged.connect(self.on_tab_change)
+
+        # --- Final Setup ---
+        self.protocol_url_received.connect(self.handle_protocol_url)
+        self.mod_update_check_finished.connect(self.on_mod_update_check_finished)
+        if self.instance_socket:
+            threading.Thread(target=self._socket_listener, daemon=True).start()
+
+        # On startup, just populate the list from saved data without a full refresh.
+        self._update_treeview()
+        threading.Thread(target=lambda: self.check_all_mod_updates(), daemon=True).start()
+        self.set_dark_title_bar()
+
+    def _create_mods_tab_ui(self):
+        mods_layout = QVBoxLayout(self.mods_tab_frame)
+
+        # Search bar (hidden by default)
+        self.search_frame = QFrame()
+        search_layout = QHBoxLayout(self.search_frame)
+        search_layout.setContentsMargins(0,0,0,0)
+        search_layout.addWidget(QLabel("Search:"))
+        self.search_entry = QLineEdit()
+        self.search_entry.setPlaceholderText("Filter by name, author, etc.")
+        self.search_entry.textChanged.connect(self._update_treeview)
+        search_layout.addWidget(self.search_entry)
+        mods_layout.addWidget(self.search_frame)
+        self.search_frame.hide()
+
+        # Mods List (Treeview)
+        self.tree = ModTreeWidget()
+        self.tree.setColumnCount(6)
+        self.tree.setHeaderLabels(["", "", "Mod Name", "Version", "Author", "Type"])
+        self.tree.setSelectionMode(QTreeWidget.SingleSelection)
+        self.tree.setDragDropMode(QTreeWidget.InternalMove)
+        self.tree.setDragEnabled(True)
+        self.tree.setDropIndicatorShown(True)
+        self.tree.setAllColumnsShowFocus(True)
+
+        header = self.tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents) # Update Icon
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents) # Enabled Checkbox
+        header.setSectionResizeMode(2, QHeaderView.Stretch)          # Name
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents) # Version
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Author
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents) # Type
+        self.tree.setColumnHidden(0, True) # Hide update column by default
+
+        # Set up drag and drop reordering
+        self.tree.model().rowsMoved.connect(self.on_drag_end)
+        self.tree.viewport().setAcceptDrops(True)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self.on_right_click)
+        self.tree.itemClicked.connect(self.on_item_clicked)
+        self.tree.itemChanged.connect(self.on_item_changed)
+        self.tree.mousePressEvent = self._tree_mouse_press_event
+
+        mods_layout.addWidget(self.tree)
+
+    def _create_browse_tab_ui(self):
+        browse_layout = QVBoxLayout(self.browse_tab_frame)
+
+        # --- Filters and Search ---
+        filter_bar = QHBoxLayout()
+        
+        filter_bar.addWidget(QLabel("Filter:"))
+        self.browse_filter_combo = QComboBox()
+        self.browse_filter_combo.addItems(["Top", "Featured", "Community Spotlight", "Newest", "Most Liked"])
+        # Use a lambda to ensure fetch_browse_mods is called with page=1 when the filter changes.
+        # The default signal would pass the combobox index (starting at 0) as the page number.
+        self.browse_filter_combo.currentIndexChanged.connect(lambda: self.fetch_browse_mods(page=1))
+        filter_bar.addWidget(self.browse_filter_combo)
+
+        filter_bar.addWidget(QLabel("Section:"))
+        self.browse_section_combo = QComboBox()
+        self.sections = {
+            "All Sections": None,
+            "Skins": 39130,
+            "HUD/GUI": 39825,
+            "Others/Misc": 39830,
+            "Animations": 40088,
+            "Items": 39839,
+            "Maps/Crossworlds": 39978,
+            "Translations": 39844
+        }
+        self.browse_section_combo.addItems(self.sections.keys())
+        self.browse_section_combo.currentIndexChanged.connect(lambda: self.fetch_browse_mods(page=1))
+        filter_bar.addWidget(self.browse_section_combo)
+
+        filter_bar.addStretch()
+
+        filter_bar.addWidget(QLabel("Search:"))
+        self.browse_search_entry = QLineEdit()
+        self.browse_search_entry.setPlaceholderText("Search GameBanana...")
+        self.browse_search_entry.returnPressed.connect(lambda: self.fetch_browse_mods(page=1))
+        filter_bar.addWidget(self.browse_search_entry)
+
+        self.browse_clear_search_btn = QPushButton("Clear")
+        self.browse_clear_search_btn.clicked.connect(self.clear_browse_search)
+        self.browse_clear_search_btn.setVisible(False)
+        self.browse_search_entry.textChanged.connect(lambda text: self.browse_clear_search_btn.setVisible(bool(text)))
+        filter_bar.addWidget(self.browse_clear_search_btn)
+
+        browse_layout.addLayout(filter_bar)
+
+        # --- Mod Browser Card Layout ---
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        
+        self.card_container = QWidget()
+        self.card_layout = QGridLayout(self.card_container)
+        self.card_layout.setSpacing(10)
+        self.card_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+
+        self.scroll_area.setWidget(self.card_container)
+        browse_layout.addWidget(self.scroll_area)
+
+        # --- Pagination and Download ---
+        page_bar = QHBoxLayout()
+        self.browse_prev_btn = QPushButton("<< Previous")
+        self.browse_prev_btn.clicked.connect(self.browse_prev_page)
+        self.browse_prev_btn.setEnabled(False)
+        page_bar.addWidget(self.browse_prev_btn)
+
+        self.browse_page_label = QLabel("Page 1")
+        self.browse_page_label.setAlignment(Qt.AlignCenter)
+        page_bar.addWidget(self.browse_page_label)
+
+        self.browse_next_btn = QPushButton("Next >>")
+        self.browse_next_btn.clicked.connect(self.browse_next_page)
+        page_bar.addWidget(self.browse_next_btn)
+
+        page_bar.addStretch()
+
+        browse_layout.addLayout(page_bar)
+
+        # --- Data for browsing ---
+        self.browse_current_page = 1
+        self.browse_mods_data = []
+        # Fetch initial data when the tab is first shown
+        self.notebook.currentChanged.connect(self._on_browse_tab_selected)
+
+
+    def _create_settings_tab_ui(self):
+        settings_layout = QVBoxLayout(self.settings_tab_frame)
+        settings_layout.setAlignment(Qt.AlignTop)
+
+        # --- Profile Management ---
+        profile_frame = QFrame()
+        profile_frame.setFrameShape(QFrame.StyledPanel)
+        profile_layout = QHBoxLayout(profile_frame)
+        profile_layout.addWidget(QLabel("<b>Profile:</b>"))
+
+        self.profile_selector = QComboBox()
+        self.profile_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.profile_selector.activated.connect(self.on_profile_change)
+        profile_layout.addWidget(self.profile_selector)
+
+        add_profile_btn = QPushButton(self.style().standardIcon(QStyle.SP_FileDialogNewFolder), "")
+        add_profile_btn.setToolTip("Add new profile")
+        add_profile_btn.clicked.connect(self.add_profile)
+        profile_layout.addWidget(add_profile_btn)
+
+        rename_profile_btn = QPushButton(self.style().standardIcon(QStyle.SP_FileLinkIcon), "")
+        rename_profile_btn.setToolTip("Rename current profile")
+        rename_profile_btn.clicked.connect(self.rename_profile)
+        profile_layout.addWidget(rename_profile_btn)
+
+        delete_profile_btn = QPushButton(self.style().standardIcon(QStyle.SP_TrashIcon), "")
+        delete_profile_btn.setToolTip("Delete current profile")
+        delete_profile_btn.clicked.connect(self.delete_profile)
+        profile_layout.addWidget(delete_profile_btn)
+
+        settings_layout.addWidget(profile_frame)
+        self.update_profile_selector()
+
+        # --- Paths Settings ---
+        paths_frame = QFrame()
+        paths_frame.setFrameShape(QFrame.StyledPanel)
+        paths_layout = QVBoxLayout(paths_frame)
+
+        # Game Directory
+        game_root_layout = QHBoxLayout()
+        game_root_layout.addWidget(QLabel("Game Directory:"))
+        self.game_root_var = QLineEdit(self.cfg["game_root"])
+        self.game_root_var.setReadOnly(True)
+        game_root_layout.addWidget(self.game_root_var)
+        game_root_btn = QPushButton("...")
+        game_root_btn.clicked.connect(self.on_change_game_root)
+        game_root_layout.addWidget(game_root_btn)
+        paths_layout.addLayout(game_root_layout)
+
+        # Mods Folder
+        mods_folder_layout = QHBoxLayout()
+        mods_folder_layout.addWidget(QLabel("Mods Folder:"))
+        self.mods_folder_var = QLineEdit(self.cfg["mods_folder"])
+        self.mods_folder_var.setReadOnly(True)
+        mods_folder_layout.addWidget(self.mods_folder_var)
+        mods_folder_btn = QPushButton("...")
+        mods_folder_btn.clicked.connect(self.on_change_mods_folder)
+        mods_folder_layout.addWidget(mods_folder_btn)
+        paths_layout.addLayout(mods_folder_layout)
+
+        settings_layout.addWidget(paths_frame)
+
+        # --- Other Settings ---
+        other_frame = QFrame()
+        other_frame.setFrameShape(QFrame.StyledPanel)
+        other_layout = QVBoxLayout(other_frame)
+
+        self.show_logs_var = QCheckBox("Show console logs")
+        self.show_logs_var.setChecked(self.cfg.get("show_cmd_logs", False))
+        self.show_logs_var.toggled.connect(self.on_toggle_logs)
+        if platform.system() == "Windows":
+            other_layout.addWidget(self.show_logs_var)
+
+        settings_layout.addWidget(other_frame)
+
+        # --- Action Buttons ---
+        action_frame = QFrame()
+        action_frame.setFrameShape(QFrame.StyledPanel)
+        action_layout = QHBoxLayout(action_frame)
+        action_layout.addStretch()
+        credits_btn = QPushButton("Credits")
+        credits_btn.clicked.connect(self.open_credits)
+        action_layout.addWidget(credits_btn)
+        action_layout.addStretch()
+        settings_layout.addWidget(action_frame)
+
+    def _create_bottom_bar(self):
+        # --- Main Action Buttons (Refresh, Save, Add) ---
+        self.bottom_button_frame = QWidget()
+        bottom_button_layout = QHBoxLayout(self.bottom_button_frame)
+        bottom_button_layout.setContentsMargins(0, 5, 0, 5)
+
+        self.refresh_btn = QPushButton(self.style().standardIcon(QStyle.SP_BrowserReload), " Refresh")
+        self.refresh_btn.setToolTip("Apply changes and refresh list")
+        self.refresh_btn.clicked.connect(self.refresh)
+        bottom_button_layout.addWidget(self.refresh_btn)
+
+        self.save_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogSaveButton), " Save")
+        self.save_btn.setToolTip("Save changes (mod order and enabled status)")
+        self.save_btn.clicked.connect(self.save_and_refresh)
+        bottom_button_layout.addWidget(self.save_btn)
+
+        self.add_mod_btn = QPushButton(QIcon(os.path.join(self.assets_path, 'gb_icon.png')), " Add Mod from URL")
+        # Use a lambda to ensure no arguments are passed when the button is clicked.
+        self.add_mod_btn.clicked.connect(lambda: self.add_mod_from_url())
+        bottom_button_layout.addWidget(self.add_mod_btn)
+
+        bottom_button_layout.addStretch()
+
+        self.search_btn = QPushButton(QIcon(os.path.join(self.assets_path, 'search.png')), "")
+        self.search_btn.setToolTip("Search mods (Ctrl+F)")
+        self.search_btn.setCheckable(True)
+        self.search_btn.toggled.connect(self.toggle_search_bar)
+        bottom_button_layout.addWidget(self.search_btn)
+
+        self.centralWidget().layout().addWidget(self.bottom_button_frame)
+
+        # --- Launch Button ---
+        launch_btn = QPushButton("Launch Game")
+        launch_btn.setToolTip("Apply changes and launch the game")
+        launch_btn.clicked.connect(self.save_and_launch)
+        font = launch_btn.font()
+        font.setPointSize(12)
+        launch_btn.setFont(font)
+        self.centralWidget().layout().addWidget(launch_btn)
+
+        # --- Status Bar ---
+        self.statusBar().showMessage(f"CrossPatch {APP_VERSION}")
+
+    def event(self, event):
+        """Handles custom events posted to the main window."""
+        if event.type() == Util.ModListFetchEvent.EVENT_TYPE:
+            self._update_browse_cards(event.mods_data)
+            return True
+        return super().event(event)
+
+    def resizeEvent(self, event):
+        """Handle window resize to reflow mod cards with a debounce timer."""
+        super().resizeEvent(event)
+        if self._resize_timer:
+            self._resize_timer.stop()
+        
+        self._resize_timer = QTimer()
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._reflow_browse_cards)
+        self._resize_timer.start(100) # 100ms delay
+    # --- Event Handlers & Logic (High-Level) ---
+
+    def closeEvent(self, event):
+        """Saves window size and closes the application."""
+        print("Saving configuration before exiting...")
         self.refresh()
+        self.cfg["window_geometry"] = self.saveGeometry().toHex().data().decode()
+        self.profile_manager.save()
+        if self.instance_socket:
+            self.instance_socket.close()
+        event.accept()
+
+    def on_tab_change(self, index):
+        """Shows or hides mod-related buttons based on the selected tab."""
+        tab_text = self.notebook.tabText(index)
+        is_mods_tab = (tab_text == "Installed Mods")
+        
+        self.refresh_btn.setVisible(is_mods_tab)
+        self.save_btn.setVisible(is_mods_tab)
+        self.add_mod_btn.setVisible(is_mods_tab)
+        self.search_btn.setVisible(is_mods_tab)
+
+        if not is_mods_tab and self.search_frame.isVisible():
+            self.search_btn.setChecked(False) # This will hide the search bar
+
+    def toggle_search_bar(self, checked):
+        self.search_frame.setVisible(checked)
+        if checked:
+            self.search_entry.setFocus()
+        else:
+            self.search_entry.clear()
+            self.tree.setFocus()
+
+    def on_search_hotkey(self):
+        """Toggles the search bar only if the 'Installed Mods' tab is active."""
+        if self.notebook.tabText(self.notebook.currentIndex()) == "Installed Mods":
+            self.search_btn.toggle()
+
+    def on_drag_end(self, parent, start, end, destination, row):
+        """Finalizes the drag operation, saving the new order."""
+        # The move is already visually done by QTreeWidget. We just need to save it.
+        new_priority = [self.tree.topLevelItem(i).data(0, Qt.UserRole) for i in range(self.tree.topLevelItemCount())]
+        if self.profile_manager.get_active_profile().get("mod_priority") != new_priority:
+            self.profile_manager.set_mod_priority(new_priority)
+            print("New mod order saved.")
+
+    def on_item_clicked(self, item, column):
+        """Handle clicks on specific columns, like the checkbox."""
+        mod_folder_name = item.data(0, Qt.UserRole)
+        if not mod_folder_name:
+            return
+
+        if column == 0: # 'Update' column
+            self.on_update_column_click(mod_folder_name)
+
+    def on_item_changed(self, item, column):
+        """Handles changes to an item, specifically the checkbox state."""
+        if column == 1: # 'Enabled' column
+            mod_folder_name = item.data(0, Qt.UserRole)
+            is_enabled = item.checkState(1) == Qt.Checked
+            self.profile_manager.set_mod_enabled(mod_folder_name, is_enabled)
+
+    def on_right_click(self, pos):
+        """Handles right-clicks on the treeview to show the context menu."""
+        item = self.tree.itemAt(pos)
+        if not item:
+            return
+
+        # Set the item under the cursor as the current item
+        self.tree.setCurrentItem(item)
+
+        mod_folder_name = item.data(0, Qt.UserRole)
+
+        menu = QMenu()
+        menu.addAction("Open containing folder", self.open_selected_mod_folder)
+        menu.addAction("Edit mod info", self.edit_selected_mod_info)
+        menu.addSeparator()
+
+        # Only show update option if mod has a page URL
+        mod_info = Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod_folder_name))
+        if mod_info.get("mod_page", "").startswith("https://gamebanana.com"):
+            menu.addAction("Check for updates", self.check_mod_updates)
+
+        menu.addSeparator()
+        menu.addAction(self.style().standardIcon(QStyle.SP_TrashIcon), "Delete mod", self.delete_mod)
+
+        menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    # --- Core Application Logic (Ported from Tkinter version) ---
+
+    def refresh(self):
+        all_mods = Util.list_mod_folders(self.cfg["mods_folder"])
+        
+        # Get the current visual order from the tree as the source of truth
+        current_priority = [self.tree.topLevelItem(i).data(0, Qt.UserRole) for i in range(self.tree.topLevelItemCount())]
+        
+        # Synchronize with disk (add new mods, remove deleted ones)
+        new_priority_list = Util.synchronize_priority_with_disk(current_priority, all_mods)
+        self.profile_manager.set_mod_priority(new_priority_list)
+
+        Util.clean_mods_folder(self.cfg)
+        enabled_mods = self.profile_manager.get_active_profile().get("enabled_mods", {})
+        Util.enable_mods_from_priority(new_priority_list, enabled_mods, self.cfg, self, self.profile_manager.get_active_profile())
+
+        threading.Thread(target=lambda: self.check_all_mod_updates(), daemon=True).start()
+
+        # A manual refresh should clear the selection for a clean state.
+        self._update_treeview(preserve_selection=False)
+        print("Saved and refreshed.")
+
+        conflicts = self.detect_mod_conflicts()
+        if conflicts:
+            dialog = ConflictDialog(self, conflicts)
+            dialog.exec()
+    def _tree_mouse_press_event(self, event):
+        """Clears selection when clicking on an empty area of the tree."""
+        item = self.tree.itemAt(event.pos())
+        if not item:
+            self.tree.clearSelection()
+        # Call the original event handler to maintain default behavior (like dragging)
+        QTreeWidget.mousePressEvent(self.tree, event)
+
+    def _update_treeview(self, preserve_selection=True):
+        # --- Preserve Selection ---
+        selected_mod_folder = None
+        if preserve_selection:
+            current_item = self.tree.currentItem()
+            if current_item:
+                selected_mod_folder = current_item.data(0, Qt.UserRole)
+
+        search_text = self.search_entry.text().lower()
+        active_profile = self.profile_manager.get_active_profile()
+        enabled_mods = active_profile.get("enabled_mods", {})
+        updatable_mod_names = {v['name'] for v in self.updatable_mods.values()}
+
+        self.tree.setColumnHidden(0, not self.updatable_mods)
+        
+        self.tree.clear()
+        for i, mod_folder_name in enumerate(active_profile.get("mod_priority", [])):
+            info = Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod_folder_name))
+            name = info.get("name", mod_folder_name)
+            version = info.get("version", "1.0")
+            author = info.get("author", "Unknown")
+            mod_type = info.get("mod_type", "pak").upper()
+
+            if search_text and not any(search_text in s.lower() for s in [name, version, author, mod_type]):
+                continue
+
+            is_enabled = enabled_mods.get(mod_folder_name, False)
+
+            item = QTreeWidgetItem(["", "", name, version, author, mod_type])
+            item.setData(0, Qt.UserRole, mod_folder_name) # Store folder name in item
+
+            # Enabled Checkbox
+            item.setCheckState(1, Qt.Checked if is_enabled else Qt.Unchecked)
+
+            # Update Icon
+            if name in updatable_mod_names:
+                item.setText(0, "⬆️")
+                font = item.font(2)
+                font.setBold(True)
+                item.setFont(2, font)
+                item.setForeground(2, QColor("springgreen"))
+
+            self.tree.addTopLevelItem(item)
+
+            # --- Restore Selection ---
+            if mod_folder_name == selected_mod_folder:
+                self.tree.setCurrentItem(item)
+
+        print("Treeview updated")
+
+    def save_and_refresh(self):
+        self.refresh()
+
+    def save_and_launch(self):
+        self.refresh()
+        Util.launch_game()
     
-    def add_mod_from_url(self):
-        from tkinter.simpledialog import askstring
-        url = askstring("Add Mod from URL", "Enter the GameBanana Mod URL:", parent=self)
-        if not url or "gamebanana.com" not in url:
-            if url: # If user entered something, but it's not a GB link
-                messagebox.showwarning("Invalid URL", "Please enter a valid GameBanana mod URL.")
+    def add_mod_from_url(self, item_data=None):
+        if not item_data:
+            url, ok = QInputDialog.getText(self, "Add Mod from URL", "Enter the GameBanana Mod URL:")
+            if not ok or not url:
+                return
+        else:
+            # If item_data is from the browser, it might be incomplete.
+            # We need to re-fetch it using the URL to guarantee we have the file list.
+            url = f"https://gamebanana.com/{item_data.get('_sProfileUrl')}"
+
+        if "gamebanana.com" not in url:
+            QMessageBox.warning(self, "Invalid URL", "Please enter a valid GameBanana mod URL.")
+            return
+        try:
+            # Always fetch the full data to ensure _aFiles is present.
+            item_data = Util.get_gb_item_data_from_url(url)
+        except Exception as e:
+            QMessageBox.critical(self, "Download Error", f"Could not get mod details.\n\n{e}")
             return
 
         try:
-            # Fetch all item data, including the list of files
-            item_data = Util.get_gb_item_data_from_url(url)
             mod_name = item_data.get('_sName', 'Unknown Mod')
-            files = item_data.get('_aFiles')
 
-            if not files:
-                messagebox.showerror("No Files Found", "Could not find any downloadable files for this mod.", parent=self)
+            if not item_data.get('_aFiles'):
+                QMessageBox.critical(self, "No Files Found", "Could not find any downloadable files for this mod.")
                 return
 
-            # Show the file selection dialog
             dialog = FileSelectDialog(self, item_data)
-            selected_file = dialog.get_selection()
-
-            # If the user selected a file, proceed with the download
-            if selected_file:
-                dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
-                dm.download_specific_file(selected_file, mod_name)
-            else:
-                print("User cancelled file selection.")
-
+            if dialog.exec():
+                self.start_download_from_selection(dialog.get_selection(), mod_name)
         except Exception as e:
-            messagebox.showerror("Download Error", f"Could not get mod details or start download.\n\n{e}", parent=self)
+            QMessageBox.critical(self, "Download Error", f"Could not start download.\n\n{e}")
 
-    def handle_protocol_url(self, url):
-        """Handles a URL passed via the custom protocol (e.g., from another instance)."""
-        print(f"Received URL from protocol: {url}")
-        
-        # New schema format: crosspatch:[URL_TO_ARCHIVE],[MOD_TYPE],[MOD_ID],[FILE_EXTENSION]
-        if url.startswith("crosspatch:") and "," in url:
+    def start_download_from_selection(self, selected_file, mod_name):
+        """Starts the download after the FileSelectDialog has closed."""
+        if selected_file:
+            self.active_download_manager = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
+            self.active_download_manager.download_specific_file(selected_file, mod_name)
+
+    def edit_selected_mod_info(self):
+        selected = self.tree.currentItem()
+        if not selected:
+            return
+
+        folder_name = selected.data(0, Qt.UserRole)
+        display_name = selected.text(2)
+        mod_folder = os.path.join(self.cfg["mods_folder"], folder_name)
+        data = Util.read_mod_info(mod_folder) or {}
+
+        dialog = EditModWindow(self, display_name, data)
+        if dialog.exec():
+            new_data = dialog.get_data()
+            original_mod_type = dialog.original_mod_type
             try:
-                # Remove protocol prefix and split the parts
-                parts_str = url.replace("crosspatch:", "")
-                parts = parts_str.split(',')
-                
-                download_url = parts[0]
-                item_type = parts[1] # e.g., "Mod" or "Sound"
-                item_id = parts[2]
-                file_ext = parts[3] if len(parts) > 3 else 'zip' # Assume zip if not provided
-
-                # Fetch full item data to get name and image for the confirmation dialog
-                # The item_type from the schema might be singular ("Mod"), so we ensure it's plural for the URL.
-                gb_page_url = f"https://gamebanana.com/{item_type.lower()}s/{item_id}"
-                item_data = Util.get_gb_item_data_from_url(gb_page_url)
-
-                dialog = OneClickInstallDialog(self, item_data)
-                if not dialog.confirmed:
-                    print("User cancelled download.")
-                    return
-                dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
-                dm.download_from_schema(download_url, item_type, item_id, file_ext, page_url=gb_page_url)
-
-            except (IndexError, ValueError) as e:
-                messagebox.showerror("Download Error", f"Could not parse the received URL. It may be malformed.\n\nDetails: {e}")
-        elif url.startswith("crosspatch://install?url="): # Fallback for simple URL format
-            gb_url = url.replace("crosspatch://install?url=", "")
-            item_data = Util.get_gb_item_data_from_url(gb_url)
-
-            dialog = OneClickInstallDialog(self, item_data)
-            if not dialog.confirmed:
-                print("User cancelled download.")
+                with open(os.path.join(mod_folder, "info.json"), "w", encoding="utf-8") as f:
+                    json.dump(new_data, f, indent=2)
+            except Exception as e:
+                QMessageBox.critical(self, "Save Error", f"Could not save info.json:\n{e}")
                 return
-            dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
-            dm.download_mod_from_url(gb_url)
+
+            active_profile = self.profile_manager.get_active_profile()
+            is_enabled = active_profile.get("enabled_mods", {}).get(folder_name, False)
+            new_mod_type = new_data["mod_type"]
+
+            if is_enabled and new_mod_type != original_mod_type:
+                Util.remove_mod_from_game_folders(folder_name, self.cfg)
+                self.refresh()
+            else:
+                selected.setText(2, new_data["name"])
+                selected.setText(3, new_data["version"])
+                selected.setText(4, new_data["author"])
+                selected.setText(5, new_mod_type.upper())
+        else:
+            print("Edit mod info cancelled.")
+
+    def on_update_column_click(self, mod_folder_name):
+        mod_update_info = next((v for k, v in self.updatable_mods.items() if k == mod_folder_name), None)
+        if mod_update_info:
+            url = mod_update_info['url']
+            print(f"Starting update for '{mod_folder_name}' from action column click.")
+            self.update_mod_from_url(url, mod_folder_name)
 
     def update_mod_from_url(self, url, mod_folder_name):
-        """Handles the process of updating an existing mod from a URL."""
         print(f"Starting update for '{mod_folder_name}' from URL: {url}")
         try:
-            # Fetch all item data, including the list of files
             item_data = Util.get_gb_item_data_from_url(url)
             mod_name_from_gb = item_data.get('_sName', 'Unknown Mod')
-            files = item_data.get('_aFiles')
 
-            if not files:
-                messagebox.showerror("No Files Found", "Could not find any downloadable files for this mod.", parent=self)
+            if not item_data.get('_aFiles'):
+                QMessageBox.critical(self, "No Files Found", "Could not find any downloadable files for this mod.")
                 return
 
-            # Show the file selection dialog
             dialog = FileSelectDialog(self, item_data)
-            selected_file = dialog.get_selection()
-
-            # If the user selected a file, proceed with the download and update
-            if selected_file:
-                dm = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
-                active_profile = self.profile_manager.get_active_profile()
-                # Use the new update method in DownloadManager
-                dm.update_specific_file(selected_file, mod_name_from_gb, mod_folder_name, active_profile)
+            if dialog.exec():
+                selected_file = dialog.get_selection()
+                if selected_file:
+                    self.active_download_manager = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
+                    active_profile = self.profile_manager.get_active_profile()
+                    self.active_download_manager.update_specific_file(selected_file, mod_name_from_gb, mod_folder_name, active_profile)
             else:
-                # If the user cancels the update, we should still re-check updates
-                # to ensure the UI state is correct (e.g., if they manually updated).
-                # We run this in a separate thread to avoid blocking the UI.
                 threading.Thread(target=lambda: self.check_all_mod_updates(), daemon=True).start()
                 print("User cancelled file selection for update.")
 
         except Exception as e:
-            messagebox.showerror("Update Error", f"Could not get mod details or start update.\n\n{e}", parent=self)
+            QMessageBox.critical(self, "Update Error", f"Could not get mod details or start update.\n\n{e}")
 
+    def check_all_mod_updates(self, manual_check=False):
+        print("Checking all mods for updates...")
+        updates = {}
+        mod_folders = Util.list_mod_folders(self.cfg["mods_folder"])
 
-    def toggle_search_bar(self):
-        if self.search_frame.winfo_ismapped():
-            self.search_frame.pack_forget()
-            self.search_entry.config(state='disabled')
-            self.search_var.set("")
-            self.focus_set() # Return focus to the main window
-        else:
-            self.search_frame.pack(fill=tk.X)
-            self.search_entry.config(state='normal')
-            self.search_entry.focus_set()
-    def _update_treeview(self):
-        """Updates the Treeview with the current mod state without heavy file I/O."""
-        # Only get search text if the search bar is actually visible
-        if hasattr(self, 'search_frame') and self.search_frame.winfo_ismapped():
-            search_text = self.search_var.get().lower() if hasattr(self, 'search_var') else ""
-        else:
-            search_text = ""
-        active_profile = self.profile_manager.get_active_profile()
-        enabled_mods = active_profile.get("enabled_mods", {})
-        updatable_mod_names = {v['name']: v for v in self.updatable_mods.values()}
+        for mod_folder_name in mod_folders:
+            mod_info = Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod_folder_name))
+            mod_name = mod_info.get("name", mod_folder_name)
+            mod_version = mod_info.get("version", "1.0")
+            mod_page = mod_info.get("mod_page")
 
-        # Conditionally display the 'update' column
-        all_cols = ("update", "enabled", "name", "version", "author", "type")
-        if self.updatable_mods:
-            self.tree.configure(displaycolumns=all_cols)
-        else:
-            self.tree.configure(displaycolumns=all_cols[1:]) # Hide the 'update' column
+            if not mod_page or not mod_page.startswith("https://gamebanana.com"):
+                continue
 
-        self.tree.delete(*self.tree.get_children())
-        for mod in active_profile.get("mod_priority", []):
-            info    = Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod))
-            name    = info.get("name", mod)
-            version = info.get("version", "1.0")
-            author  = info.get("author", "Unknown")
-            mod_type = info.get("mod_type", "pak").upper()
-
-            # Apply search filter
-            if search_text:
-                if not (search_text in name.lower() or search_text in author.lower() or search_text in version.lower() or search_text in mod_type.lower()):
+            try:
+                gb_version = Util.get_gb_mod_version(mod_page)
+                if not gb_version:
                     continue
-            
-            enabled = enabled_mods.get(mod, False)
-            check_char = "☑" if enabled else "☐"
-            tags = ()
-            
-            if name in updatable_mod_names:
-                update_char = "⬆️"
-                tags = ('updatable',)
+                if Util.is_newer_version(mod_version, gb_version):
+                    updates[mod_folder_name] = {
+                        'name': mod_name,
+                        'current': mod_version,
+                        'new': gb_version,
+                        'url': mod_page,
+                        'folder_name': mod_folder_name
+                    }
+                    print(f"Update found for {mod_name}: {mod_version} -> {gb_version}")
+            except Exception as e:
+                print(f"Error checking {mod_name}: {str(e)}")
+
+        # Emit signal to update UI on the main thread
+        self.mod_update_check_finished.emit(updates, manual_check)
+
+    def on_mod_update_check_finished(self, updates, manual_check):
+        """Slot to handle the results of the background mod update check."""
+        self.updatable_mods = updates
+        self._update_treeview(preserve_selection=True)
+
+        if manual_check:
+            if updates:
+                QMessageBox.information(self, "Updates Found", f"{len(updates)} mod(s) have updates available and are now highlighted.")
             else:
-                update_char = ""
-            
-            self.tree.insert("", tk.END, iid=mod, values=(update_char, check_char, name, version, author, mod_type), tags=tags)
-        print("Treeview updated")
+                QMessageBox.information(self, "Update Check", "No mod updates available.")
+        print("Mod update check finished and UI updated.")
 
-    def refresh(self):
-        # Get a sorted list of all mods
-        all_mods = Util.list_mod_folders(self.cfg["mods_folder"])
-        
-        active_profile = self.profile_manager.get_active_profile()
+    def check_mod_updates(self):
+        selected = self.tree.currentItem()
+        if not selected: return
 
-        # Ensure all mods are in the priority list, append new ones
-        priority_list = active_profile.get("mod_priority", [])
-        for mod in all_mods:
-            if mod not in priority_list:
-                priority_list.append(mod)
-        # Remove mods from priority list if they were deleted
-        active_profile["mod_priority"] = [mod for mod in priority_list if mod in all_mods]
-        enabled_mods = active_profile.get("enabled_mods", {})
+        mod_folder = selected.data(0, Qt.UserRole)
+        display_name = selected.text(2)
+        mod_info = Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod_folder))
 
-        # Sort mods to move disabled ones to the bottom, preserving relative order.
-        enabled_priority = [
-            mod for mod in active_profile["mod_priority"] if enabled_mods.get(mod, False)
-        ]
-        # Disabled mods are now sorted alphabetically.
-        disabled_priority = sorted(
-            [mod for mod in active_profile["mod_priority"] if not enabled_mods.get(mod, False)],
-            key=str.lower
-        )
-        
-        self.profile_manager.set_mod_priority(enabled_priority + disabled_priority)
+        mod_page = mod_info.get("mod_page")
+        if not mod_page or not mod_page.startswith("https://gamebanana.com"):
+            QMessageBox.information(self, "Update Check", "This mod does not have a GameBanana page set in its info.json.")
+            return
 
-        Util.clean_mods_folder(self.cfg)
-        # Enable mods in the correct priority order
-        for i, mod in enumerate(enabled_priority):
-            Util.enable_mod_with_ui(mod, self.cfg, i, self, active_profile)
+        try:
+            gb_version = Util.get_gb_mod_version(mod_page)
+            if not gb_version:
+                QMessageBox.warning(self, "Update Check", "Could not find version information for this mod on GameBanana.")
+                return
 
-        # Re-check for updates to clear any green highlights for mods that are now up-to-date
-        threading.Thread(target=lambda: self.check_all_mod_updates(), daemon=True).start()
+            local_version = mod_info.get("version", "1.0")
 
-        self._update_treeview()
-        print("Saved and refreshed.")
+            if Util.is_newer_version(local_version, gb_version):
+                dialog = ModUpdatePromptWindow(self, display_name, local_version, gb_version)
+                if dialog.exec():
+                    self.update_mod_from_url(mod_page, mod_folder)
+            else:
+                QMessageBox.information(self, "No Updates Found", f"'{display_name}' is already up to date (v{local_version}).")
 
-        # Mod conflict detection
-        conflicts = self.detect_mod_conflicts()
-        if conflicts:
-            ConflictDialog(self, conflicts)
+        except Exception as e:
+            QMessageBox.critical(self, "Update Check Error", f"Failed to check for updates: {str(e)}")
+
+    def delete_mod(self):
+        selected = self.tree.currentItem()
+        if not selected: return
+
+        mod_id = selected.data(0, Qt.UserRole)
+        reply = QMessageBox.question(self, "Confirm Delete", f"Are you sure you want to delete '{selected.text(2)}'?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.Yes:
+            print(f"Deleting mod {mod_id}")
+            Util.remove_mod_from_game_folders(mod_id, self.cfg)
+            shutil.rmtree(os.path.join(self.cfg["mods_folder"], mod_id))
+            self.refresh()
+
+    def open_selected_mod_folder(self):
+        selected = self.tree.currentItem()
+        if not selected: return
+
+        folder = os.path.join(self.cfg["mods_folder"], selected.data(0, Qt.UserRole))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
     def detect_mod_conflicts(self):
-        # Scan enabled mods for file conflicts
         mods_folder = self.cfg["mods_folder"]
         active_profile = self.profile_manager.get_active_profile()
         enabled_mods_dict = active_profile.get("enabled_mods", {})
         enabled_mods = [mod for mod in active_profile.get("mod_priority", []) if enabled_mods_dict.get(mod, False)]
         file_map = {}
         conflicts = {}
-
-        # Define a set of filenames to ignore during conflict detection.
-        # These are often config or metadata files that don't cause actual in-game conflicts.
         conflict_blacklist = {"info.json", "config.ini", "readme.txt", "readme.md", "changelog.txt"}
 
         for mod in enabled_mods:
             mod_path = os.path.join(mods_folder, mod)
-
-            # Read mod info to check its type
             mod_info = Util.read_mod_info(mod_path)
-            mod_type = mod_info.get("mod_type", "pak")
-
-            # Skip conflict detection for all UE4SS mod types
-            if mod_type.startswith("ue4ss"):
+            if mod_info.get("mod_type", "pak").startswith("ue4ss"):
                 continue
 
             for root, _, files in os.walk(mod_path):
@@ -385,337 +978,37 @@ class CrossPatchWindow(TkinterDnD.Tk):
             if len(mods) > 1:
                 conflicts[rel_path] = mods
         return conflicts
-    def __init__(self, instance_socket=None):
-        super().__init__(className="crosspatch")
-        self.instance_socket = instance_socket
 
-        self.withdraw()
+    def handle_protocol_url(self, url):
+        print(f"Received URL from protocol: {url}")
+        self.activateWindow() # Bring window to front
+        self.raise_()
 
-        # Use the robust find_assets_dir function to locate the assets folder
-        asset_path = find_assets_dir(verbose=True)
-        print("Using assets folder:", asset_path)
-
-        # Theme: Azure dark
-        self.tk.call('source', os.path.join(asset_path, 'themes', 'azure', 'azure.tcl'))
-        self.tk.call('set_theme', 'dark')
-
-        # --- Custom Style Configuration for Sleek Tabs ---
-        style = ttk.Style(self)
-
-        # Get theme colors to ensure the new style matches the dark theme
-        selected_bg = style.lookup('TNotebook.Tab', 'background', ('selected',))
-        unselected_bg = style.lookup('TFrame', 'background') # Use the main window background for unselected tabs
-        border_color = style.lookup('TFrame', 'background')
-
-        # Configure the tab style for a modern look
-        style.configure('TNotebook.Tab',
-                        padding=[10, 3],          # [padx, pady]
-                        background=unselected_bg, # Make unselected tabs blend in
-                        borderwidth=1)
-        style.map('TNotebook.Tab',
-                  background=[('selected', selected_bg)]) # Highlight the selected tab
-
-        # Remove the outer border of the notebook widget itself for a cleaner look
-        style.configure('TNotebook', borderwidth=0)
-
-        self.cfg = Config.config
-        self.profile_manager = ProfileManager(self.cfg)
-        self.geometry(self.cfg.get("window_size", "580x720"))
-        self.updatable_mods = {} # To store mods with available updates
-        self.resizable(True, True)
-        self.title(APP_TITLE)
-
-        # --- Tabbed Interface ---
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(expand=True, fill="both", padx=8, pady=8)
-        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_change)
-
-        self.mods_tab_frame = ttk.Frame(self.notebook)
-        self.settings_tab_frame = ttk.Frame(self.notebook)
-
-        self.notebook.add(self.mods_tab_frame, text="Mods")
-        self.notebook.add(self.settings_tab_frame, text="Settings")
-
-        # FIXME: Config.hide_console currently crashes print functions.
-        # Disabled during refactor for stability.
-        # if self.cfg.get("show_cmd_logs"):
-        #      Config.show_console()
-        # else:
-        #      Config.hide_console()
-
-        # --- Profile Management UI ---
-        profile_frame = ttk.Frame(self.settings_tab_frame, padding=(0, 0, 0, 8))
-        profile_frame.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(profile_frame, text="Profile:").pack(side=tk.LEFT)
-        
-        self.profile_var = tk.StringVar()
-        self.profile_selector = ttk.Combobox(profile_frame, textvariable=self.profile_var, state="readonly", width=30)
-        self.profile_selector.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
-        self.profile_selector.bind("<<ComboboxSelected>>", self.on_profile_change)
-        
-        # Prevent text selection/highlighting in the combobox
-        self.profile_selector.bind("<B1-Motion>", lambda e: "break")
-        self.profile_selector.bind("<Shift-Button-1>", lambda e: "break")
-        self.profile_selector.bind("<Double-Button-1>", lambda e: "break")
-        self.profile_selector.bind("<FocusIn>", lambda e: self.profile_selector.selection_clear())
-
-        # Add profile management buttons
-        profile_btn_frame = ttk.Frame(profile_frame)
-        profile_btn_frame.pack(side=tk.RIGHT, padx=(5, 0))
-        add_profile_btn = ttk.Button(profile_btn_frame, text="+", command=self.add_profile, width=3)
-        add_profile_btn.pack(side=tk.LEFT)
-        Tooltip(add_profile_btn, "Add new profile", style)
-        rename_profile_btn = ttk.Button(profile_btn_frame, text="Edit", command=self.rename_profile)
-        rename_profile_btn.pack(side=tk.LEFT, padx=5)
-        ttk.Button(profile_btn_frame, text="Delete", command=self.delete_profile).pack(side=tk.LEFT) # No tooltip needed, text is clear
-        self.update_profile_selector()
-        
-        # --- Settings UI (integrated from former SettingsWindow) ---
-        settings_content_frame = ttk.Frame(self.settings_tab_frame, padding=(0, 8, 0, 0))
-        settings_content_frame.pack(fill=tk.BOTH, expand=True)
-        
-        self.show_logs_var = tk.BooleanVar(
-            value=self.cfg.get("show_cmd_logs", False)
-        )
-        chk = ttk.Checkbutton(
-            settings_content_frame,
-            text="Show console logs",
-            variable=self.show_logs_var,
-            command=self.on_toggle_logs
-        )
-        if platform.system() == "Windows":
-            chk.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,8))
-
-        ttk.Label(settings_content_frame, text="Game Directory:").grid(row=1, column=0, sticky="w")
-        self.game_root_var = tk.StringVar(value=self.cfg["game_root"])
-        entry = ttk.Entry(settings_content_frame, textvariable=self.game_root_var, width=50, state="readonly")
-        entry.grid(row=1, column=1, sticky="we", padx=(5,0))
-        pick_btn = ttk.Button(settings_content_frame, text="...", width=3, command=self.on_change_game_root)
-        Tooltip(pick_btn, "Browse for game directory", style)
-        pick_btn.grid(row=1, column=2, sticky="e", padx=(5,0))
-
-        ttk.Label(settings_content_frame, text="Mods Folder:").grid(row=2, column=0, sticky="w", pady=(8,0))
-        self.mods_folder_var = tk.StringVar(value=self.cfg["mods_folder"])
-        mods_entry = ttk.Entry(settings_content_frame, textvariable=self.mods_folder_var, width=50, state="readonly")
-        mods_entry.grid(row=2, column=1, sticky="we", padx=(5,0), pady=(8,0))
-        mods_pick_btn = ttk.Button(settings_content_frame, text="...", width=3, command=self.on_change_mods_folder)
-        Tooltip(mods_pick_btn, "Browse for mods folder", style)
-        mods_pick_btn.grid(row=2, column=2, sticky="e", padx=(5,0), pady=(8,0))
-        settings_content_frame.columnconfigure(1, weight=1)
-
-        # Settings action buttons
-        settings_btn_frame = ttk.Frame(settings_content_frame)
-        settings_btn_frame.grid(row=3, column=0, columnspan=3, pady=(12,0), sticky="w")
-        
-        ttk.Button(settings_btn_frame, text="Credits", command=lambda: self.open_credits()).pack(anchor="w", pady=(5, 0))
-
-
-        # Search bar (hidden by default)
-        self.search_frame = ttk.Frame(self.mods_tab_frame, padding=(0, 0, 0, 8))
-        self.search_var = tk.StringVar()
-        self.search_var.trace_add('write', lambda *args: self._update_treeview())
-        ttk.Label(self.search_frame, text="Search:").pack(side=tk.LEFT)
-        self.search_entry = ttk.Entry(self.search_frame, textvariable=self.search_var, width=30)
-        self.search_entry.pack(side=tk.LEFT, padx=5)
-        self.search_frame.pack_forget()
-        
-        # --- Mods List (Treeview) ---
-        mid = ttk.Frame(self.mods_tab_frame)
-        mid.pack(fill=tk.BOTH, expand=True)
-
-        cols = ("update", "enabled", "name", "version", "author", "type")
-        self.tree = ttk.Treeview(mid, columns=cols, show="headings")
-        self.tree.heading("update", text="")
-        self.tree.heading("enabled", text="")
-        self.tree.heading("name",    text="Mod Name")
-        self.tree.heading("version", text="Version")
-        self.tree.heading("author",  text="Author")
-        self.tree.heading("type", text="Type")
-        self.tree.column("update", width=30, anchor=tk.CENTER, stretch=False)
-        self.tree.column("enabled", width=30, anchor=tk.CENTER, stretch=False)
-        self.tree.column("name",    width=180, anchor=tk.W)
-        self.tree.column("version", width=80,  anchor=tk.CENTER)
-        self.tree.column("author",  width=120, anchor=tk.W)
-        self.tree.column("type", width=50, anchor=tk.CENTER)
-        
-        # Configure a tag for the drop indicator highlight
-        self.tree.tag_configure('drop_indicator', background='dodgerblue')
-        self.tree.tag_configure('updatable', foreground='springgreen')
-
-        tree_scrollbar = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=tree_scrollbar.set)
-        tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        # Bindings for drag-and-drop reordering and clicks
-        self.tree.bind("<ButtonPress-1>", self.on_drag_start)
-        self.tree.bind("<B1-Motion>", self.on_drag_motion)
-        self.tree.bind("<ButtonRelease-1>", self.on_drag_end)
-
-        self.context_menu = tk.Menu(
-            self,
-            tearoff=0,
-            bd=0,
-            relief="flat"
-        )
-        self.context_menu.add_command(
-            label="Open containing folder",
-            command=self.open_selected_mod_folder
-        )
-        self.context_menu.add_command(
-            label="Edit mod info",
-            command=self.edit_selected_mod_info
-        )
-        self.context_menu.add_command(
-            label="Check for updates",
-            command=self.check_mod_updates
-        )
-        self.context_menu.add_command(
-            label="Delete mod",
-            command=self.delete_mod
-        )
-        self.tree.bind("<Button-3>", self.on_right_click)
-        self.refresh()
-        btn_frame = ttk.Frame(self, padding=8)
-        btn_frame.pack(fill=tk.X)
-        
-        # Configure grid columns to control button positions
-        btn_frame.columnconfigure(0, weight=0) # Refresh
-        btn_frame.columnconfigure(1, weight=0) # Save
-        btn_frame.columnconfigure(2, weight=0) # Add Mod
-        btn_frame.columnconfigure(3, weight=1) # Spacer
-        btn_frame.columnconfigure(4, weight=0) # Search
-
-        # Settings button (currently hidden)
-        # To show it again, uncomment the line below.
-        self.settings_btn = ttk.Button(
-            btn_frame, text="⚙", width=3,
-            command=self.open_settings
-        )
-        # self.settings_btn.pack(side=tk.RIGHT, padx=5)
-        # Search button
-        self.search_btn = ttk.Button(
-            btn_frame, text="🔍", width=3,
-            command=self.toggle_search_bar
-        )
-        Tooltip(self.search_btn, "Search mods (Ctrl+F)", style)
-        self.search_btn.grid(row=0, column=4, sticky="e", padx=5)
-
-        # --- Load button icons ---
         try:
-            # Refresh and Save icons
-            refresh_icon_path = os.path.join(asset_path, "refresh_icon.png")
-            self.refresh_icon = tk.PhotoImage(file=refresh_icon_path).subsample(3, 3)
-            save_icon_path = os.path.join(asset_path, "save_icon.png")
-            self.save_icon = tk.PhotoImage(file=save_icon_path).subsample(3, 3)
-            # GameBanana icon for the "Add Mod" button
-            gb_icon_path = os.path.join(asset_path, "gb_icon.png")
-            self.gb_icon = tk.PhotoImage(file=gb_icon_path).subsample(2, 2) # Adjust subsample as needed for icon size
-            add_mod_compound = tk.LEFT
-        except tk.TclError:
-            print("Could not load one or more icon files. Buttons may be text-only.")
-            self.refresh_icon = None
-            self.save_icon = None
-            self.gb_icon = None
-            add_mod_compound = tk.NONE
+            if url.startswith("crosspatch:") and "," in url:
+                parts_str = url.replace("crosspatch:", "")
+                parts = parts_str.split(',')
+                download_url, item_type, item_id = parts[0], parts[1], parts[2]
+                file_ext = parts[3] if len(parts) > 3 else 'zip'
+                gb_page_url = f"https://gamebanana.com/{item_type.lower()}s/{item_id}"
+                item_data = Util.get_gb_item_data_from_url(gb_page_url)
 
-        # Create icon-based buttons for Refresh and Save
-        self.refresh_btn = ttk.Button(btn_frame, image=self.refresh_icon, width=3, command=self.refresh)
-        Tooltip(self.refresh_btn, "Apply changes and refresh list", style)
-        self.refresh_btn.grid(row=0, column=0, sticky="w", padx=5)
-        self.save_btn = ttk.Button(btn_frame, image=self.save_icon, width=3, command=self.save_and_refresh)
-        self.save_btn.grid(row=0, column=1, sticky="w")
-        Tooltip(self.save_btn, "Save changes", style)
+                dialog = OneClickInstallDialog(self, item_data)
+                if dialog.exec():
+                    self.active_download_manager = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
+                    self.active_download_manager.download_from_schema(download_url, item_type, item_id, file_ext, page_url=gb_page_url)
 
-        self.add_mod_btn = ttk.Button(btn_frame, text="Add Mod from URL", image=self.gb_icon, compound=add_mod_compound, command=self.add_mod_from_url)
-        self.add_mod_btn.grid(row=0, column=2, sticky="w", padx=5)
-        ttk.Label(self, text=f"CrossPatch {APP_VERSION}", font=("Segoe UI", 8)).pack(pady=(0,8))
-
-        # --- Bottom action buttons ---
-        bottom_action_frame = ttk.Frame(self, padding=(8, 0, 8, 8))
-        bottom_action_frame.pack(side=tk.BOTTOM, fill=tk.X)
-
-        # Configure column to make the button expand
-        bottom_action_frame.columnconfigure(0, weight=1)
-
-        launch_btn = ttk.Button(bottom_action_frame, text="Launch Game", command=self.save_and_launch)
-        Tooltip(launch_btn, "Apply changes and launch the game", style)
-        launch_btn.grid(row=0, column=0, sticky="ew")
-
-        # --- Final Window Setup ---
-        # Set the icon and center the window before showing it.
-        if platform.system() == "Windows":
-            icon_path = os.path.join(asset_path, "CrossP.ico")
-            self.iconbitmap(icon_path)
-
-        # This needs to run before deiconify to prevent a white flash.
-        self.update_idletasks()
-        Util.center_window(self)
-
-        # Show the window.
-        self.deiconify()
-
-        # Set dark title bar on Windows after the window is visible and has a handle.
-        if platform.system() == "Windows":
-            try:
-                hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
-                DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-                value = ctypes.c_int(1) # 1 for True/dark
-                ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
-                    ctypes.byref(value), ctypes.sizeof(value)
-                )
-            except Exception as e:
-                print(f"Could not set dark title bar: {e}")
-
-        # Drag and drop support
-        self.tree.drop_target_register(DND_FILES)
-        self.tree.dnd_bind('<<Drop>>', self.on_drop_mod)
-
-        # Bind CTRL+F to toggle search bar
-        self.bind_all('<Control-f>', lambda e: self.toggle_search_bar())
-        
-        # Add protocol for saving window size on close
-        self.protocol("WM_DELETE_WINDOW", self.on_closing)
-
-        # Start listening for connections from other instances (for one-click installs)
-        if self.instance_socket:
-            threading.Thread(target=self._socket_listener, daemon=True).start()
-        
-        # --- Performance Fix for Resizing ---
-        # The tkinterdnd2 library can cause severe lag on window resize on Windows.
-        # Unbinding this specific event fixes the issue without affecting drag-and-drop functionality.
-        self.unbind('<Configure>')
-
-    def on_tab_change(self, event):
-        """Shows or hides mod-related buttons based on the selected tab."""
-        selected_tab_index = self.notebook.index(self.notebook.select())
-        
-        # Index 0 is the "Mods" tab, Index 1 is the "Settings" tab.
-        if selected_tab_index == 0:
-            # Show the buttons by packing them back into the frame.
-            self.refresh_btn.grid(row=0, column=0, sticky="w", padx=5)
-            self.save_btn.grid(row=0, column=1, sticky="w")
-            self.add_mod_btn.grid(row=0, column=2, sticky="w", padx=5)
-            self.search_btn.grid(row=0, column=4, sticky="e", padx=5)
-        else:
-            # Hide the buttons.
-            self.refresh_btn.grid_remove()
-            self.save_btn.grid_remove()
-            self.add_mod_btn.grid_remove()
-            self.search_btn.grid_remove()
-
-
-    def on_closing(self):
-        """Saves window size and closes the application."""
-        print("Saving configuration before exiting...")
-        self.refresh()  # This saves the mod order and applies enabled mods.
-        self.cfg["window_size"] = self.geometry()  # Save window size
-        self.profile_manager.save()  # Save all profile and config data
-        self.destroy()
+            elif url.startswith("crosspatch://install?url="):
+                gb_url = url.replace("crosspatch://install?url=", "")
+                item_data = Util.get_gb_item_data_from_url(gb_url)
+                dialog = OneClickInstallDialog(self, item_data)
+                if dialog.exec():
+                    self.active_download_manager = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
+                    self.active_download_manager.download_from_schema(gb_url) # Should be schema download
+        except Exception as e:
+            QMessageBox.critical(self, "Download Error", f"Could not parse the received URL.\n\nDetails: {e}")
 
     def _socket_listener(self):
-        """Listens for incoming connections on the instance socket."""
         self.instance_socket.listen(1)
         while True:
             try:
@@ -724,399 +1017,250 @@ class CrossPatchWindow(TkinterDnD.Tk):
                     data = conn.recv(1024)
                     if data:
                         url = data.decode('utf-8')
-                        # The socket runs in a separate thread, so we must use 'after'
-                        # to schedule the UI-related task on the main thread.
-                        self.after(0, self.handle_protocol_url, url)
+                        self.protocol_url_received.emit(url)
             except Exception as e:
                 print(f"Socket listener error: {e}")
                 break
 
-    def on_drag_start(self, event):
-        """Initiates a drag operation or handles a checkbox click."""
-        self._drag_data = {}
-        item_id = self.tree.identify_row(event.y)
-        if not item_id:
-            return
-
-        clicked_col = self.tree.identify_column(event.x)
-
-        # Get the currently displayed columns to handle dynamic column visibility
-        display_cols = self.tree.cget("displaycolumns")
-        if display_cols == ('#all',): # If all columns are shown by default
-            display_cols = self.tree.cget("columns")
-
-        # Check if the click was on the 'update' or 'enabled' column by their name
-        col_name = self.tree.column(clicked_col, "id")
-
-        if col_name == 'update' and 'update' in display_cols:
-            self.on_update_column_click(item_id)
-            return # Prevent drag operation
-        elif col_name == 'enabled':
-            self.on_enable_column_click(item_id)
-            return
-
-        # Otherwise, it's a drag operation.
-        # It's a drag operation. Store item info.
-        self._drag_data['item'] = item_id
-        self._drag_data['index'] = self.tree.index(item_id)
-
-        # Create a semi-transparent "ghost" window that follows the cursor
-        self._drag_data['ghost'] = ghost = tk.Toplevel(self)
-        ghost.transient(self) # Make it a transient window of the main app
-        ghost.overrideredirect(True)
-        ghost.attributes('-alpha', 0.7)
-        ghost.attributes('-topmost', True)
-        label = ttk.Label(ghost, text=self.tree.item(item_id, 'values')[2], padding=5, background='grey15', foreground='white')
-        label.pack()
-        ghost.update_idletasks()
-        # Position the ghost window at the cursor
-        ghost.geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
-
-    def on_drag_motion(self, event):
-        """Handles moving the item during a drag, updating the ghost and indicator."""
-        if not hasattr(self, '_drag_data') or not self._drag_data.get('item'):
-            return
-
-        # Move the ghost window
-        ghost = self._drag_data.get('ghost')
-        if ghost:
-            ghost.geometry(f"+{event.x_root + 10}+{event.y_root + 10}")
-
-        # Manage the drop indicator highlight
-        target_item = self.tree.identify_row(event.y)
-        last_indicator = self._drag_data.get('last_indicator')
-
-        # Remove old indicator if it exists and is not the new target
-        if last_indicator and last_indicator != target_item and self.tree.exists(last_indicator):
-            self.tree.item(last_indicator, tags=())
-
-        # Add new indicator if target is valid
-        if target_item and target_item != self._drag_data['item']:
-            self.tree.item(target_item, tags=('drop_indicator',))
-            self._drag_data['last_indicator'] = target_item
-        else:
-            self._drag_data['last_indicator'] = None
-
-    def on_drag_end(self, event):
-        """Finalizes the drag operation, moving the item and saving the new order."""
-        if not hasattr(self, '_drag_data') or not self._drag_data.get('item'):
-            return
-
-        # Destroy the ghost window
-        ghost = self._drag_data.get('ghost')
-        if ghost:
-            ghost.destroy()
-
-        # Clean up any lingering indicator
-        last_indicator = self._drag_data.get('last_indicator')
-        if last_indicator and self.tree.exists(last_indicator):
-            self.tree.item(last_indicator, tags=())
-
-        # Determine the drop target and move the item
-        target_item = self.tree.identify_row(event.y)
-        dragged_item = self._drag_data.get('item')
-
-        if target_item and target_item != dragged_item:
-            self.tree.move(dragged_item, '', self.tree.index(target_item))
-
-        # Reset drag data
-        self._drag_data = {}
-
-        # Check if the order actually changed and save if it did
-        new_priority = list(self.tree.get_children())
-        if self.profile_manager.get_active_profile().get("mod_priority") != new_priority:
-            self.profile_manager.set_mod_priority(new_priority)
-
-    def on_update_column_click(self, mod_folder_name):
-        """Handles clicks on the update icon column."""
-        if mod_folder_name in self.updatable_mods:
-            mod_update_info = self.updatable_mods[mod_folder_name]
-            url = mod_update_info['url']
-            print(f"Starting update for '{mod_folder_name}' from action column click.")
-            self.update_mod_from_url(url, mod_folder_name)
-
-    def on_enable_column_click(self, mod_folder_name):
-        """Handles clicks on the enable/disable checkbox column."""
-        active_profile = self.profile_manager.get_active_profile()
-        is_enabling = not active_profile.get("enabled_mods", {}).get(mod_folder_name, False)
-
-        # Toggle the mod's state in the config
-        self.profile_manager.set_mod_enabled(mod_folder_name, is_enabling)
-
-        # Update the checkbox character in the treeview instantly
-        current_values = list(self.tree.item(mod_folder_name, "values"))
-        # The checkbox is now in the second column (index 1)
-        current_values[1] = "☑" if is_enabling else "☐"
-        self.tree.item(mod_folder_name, values=tuple(current_values))
-
-    def update_profile_selector(self):
-        """Updates the profile combobox with the latest list of profiles."""
-        profiles = self.profile_manager.get_profile_names()
-        active_profile = self.profile_manager.get_active_profile_name()
-        
-        self.profile_selector['values'] = profiles
-        self.profile_var.set(active_profile)
-
-    def on_profile_change(self, event=None):
-        """Handles switching to a new profile."""
-        new_profile = self.profile_var.get()
-        if self.profile_manager.set_active_profile(new_profile):
-            self.refresh() # A full refresh is needed to apply the new profile
-
-    def add_profile(self):
-        """Creates a new profile."""
-        new_name = simpledialog.askstring("New Profile", "Enter a name for the new profile:", parent=self)
-        if self.profile_manager.create_profile(new_name):
-            self.update_profile_selector()
-            self.refresh()
-        elif new_name: # If they entered a name but it failed (e.g., duplicate)
-            messagebox.showerror("Error", "A profile with this name already exists or the name is invalid.", parent=self)
-
-    def rename_profile(self):
-        """Renames the currently active profile."""
-        old_name = self.profile_manager.get_active_profile_name()
-        
-        if old_name == self.profile_manager.DEFAULT_PROFILE_NAME:
-            messagebox.showerror("Error", "The 'Default' profile cannot be renamed.", parent=self)
-            return
-
-        new_name = simpledialog.askstring("Rename Profile", f"Enter a new name for '{old_name}':", initialvalue=old_name, parent=self)
-        
-        if self.profile_manager.rename_profile(old_name, new_name):
-            self.update_profile_selector()
-        elif new_name and new_name != old_name: # If they entered a new name but it failed
-            messagebox.showerror("Error", "A profile with this name already exists or the name is invalid.", parent=self)
-
-    def delete_profile(self):
-        """Deletes the currently active profile."""
-        profile_to_delete = self.profile_manager.get_active_profile_name()
-
-        if profile_to_delete == self.profile_manager.DEFAULT_PROFILE_NAME:
-            messagebox.showerror("Error", "The 'Default' profile cannot be deleted.", parent=self)
-            return
-        if len(self.profile_manager.get_profile_names()) <= 1:
-            messagebox.showerror("Error", "You cannot delete the last profile.", parent=self)
-            return
-
-        if not messagebox.askyesno("Confirm Delete", f"Are you sure you want to delete the active profile '{profile_to_delete}'?", parent=self):
-            return
-
-        if self.profile_manager.delete_profile(profile_to_delete):
-            self.update_profile_selector()
-            self.refresh() # Refresh to load the new active profile
-
-    def on_right_click(self, event):
-        """Handles right-clicks on the treeview to show the context menu."""
-        row_id = self.tree.identify_row(event.y)
-        if not row_id:
-            return
-        self.tree.selection_set(row_id)
-        self.context_menu.tk_popup(event.x_root, event.y_root)
-
-    def launch_game(self):
-        """Just launches the game. Kept for internal use if needed."""
-        Util.launch_game()
-
-    def save_and_refresh(self):
-        self.refresh()
-
-    def save_and_launch(self):
-        self.refresh()
-        self.launch_game()
-
-    def open_selected_mod_folder(self):
-        print("Opening mod folder")
-        selected = self.tree.selection()
-        if not selected:
-            return
-        mod_id = selected[0]
-        folder = os.path.join(self.cfg["mods_folder"], mod_id)
+    def set_dark_title_bar(self):
         if platform.system() == "Windows":
-            os.startfile(folder)
-        elif platform.system() == "Darwin": # macOS
-            subprocess.Popen(["open", folder])
-        else: # Linux and other UNIX-like systems
             try:
-                subprocess.Popen(["xdg-open", folder])
-            except FileNotFoundError:
-                messagebox.showerror("Error", f"Could not open folder. Please ensure xdg-open is installed.")
-
-    def delete_mod(self):
-        selected = self.tree.selection()
-        if not selected:
-            return
-        mod_id = selected[0]
-        # Confirm mod deletion
-        deletemod_confirm = tk.messagebox.askyesno(f"Mod Deletion", f"Are you sure you want to delete {mod_id}?",)
-        if deletemod_confirm:
-            print(f"Deleting mod {mod_id} from game folder (if exists)")
-            Util.remove_mod_from_game_folders(mod_id, self.cfg)
-
-            print(f"Deleting mod {mod_id} from mods folder")
-            shutil.rmtree(os.path.join(self.cfg["mods_folder"], mod_id))
-
-            print(f"Refreshing mod list")
-            self.refresh()
-
-
-    def check_all_mod_updates(self, manual_check=False):
-        print("Checking all mods for updates...")
-        updates = {}
-        
-        for mod in Util.list_mod_folders(self.cfg["mods_folder"]):
-            mod_info = Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod))
-            mod_name = mod_info.get("name", mod)
-            mod_version = mod_info.get("version", "1.0")
-            mod_page = mod_info.get("mod_page")
-            
-            if not mod_page or not mod_page.startswith("https://gamebanana.com"):
-                print(f"Skipping {mod_name} - no Gamebanana page")
-                continue
-            mod_folder_name = mod
-                
-            try:
-                # Use the new centralized function to get the version
-                gb_version = Util.get_gb_mod_version(mod_page)
-                
-                if not gb_version:
-                    print(f"No version info found for {mod_name}")
-                    continue
-                if Util.is_newer_version(mod_version, gb_version):
-                    updates[mod_folder_name] = {
-                        'name': mod_name,
-                        'current': mod_version,
-                        'new': gb_version,
-                        'url': mod_page,
-                        'folder_name': mod_folder_name
-                    }
-                    print(f"Update found for {mod_name}: {mod_version} -> {gb_version}")
-                
+                hwnd = self.winId()
+                DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+                value = ctypes.c_int(1)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                    ctypes.byref(value), ctypes.sizeof(value)
+                )
             except Exception as e:
-                print(f"Error checking {mod_name}: {str(e)}")
-                continue
-        
-        self.updatable_mods = updates
-        
-        # Schedule the UI update on the main thread.
-        self.after(0, self._update_treeview)
+                print(f"Could not set dark title bar: {e}")
 
-        if updates:
-            print(f"Found {len(updates)} mod(s) with available updates.")
-            if manual_check:
-                self.after(0, lambda: messagebox.showinfo("Updates Found", f"{len(updates)} mod(s) have updates available and are now highlighted in green.", parent=self))
-        else:
-            print("No mod updates found.")
-            if manual_check:
-                self.after(0, lambda: messagebox.showinfo("Update Check", "No mod updates available.", parent=self))
-    
-    def check_mod_updates(self):
-        print("Checking for mod updates...")
-        sel = self.tree.selection()
-        if not sel:
-            return
-        
-        tree_id = sel[0]
-        display_name = self.tree.item(tree_id, "values")[2]
-        
-        mod_folder = None
-        mod_info = None
-        for mod in Util.list_mod_folders(self.cfg["mods_folder"]):
-            info = Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod))
-            if info.get("name", mod) == display_name:
-                mod_folder = mod
-                mod_info = info
-                break
-                
-        if not mod_folder or not mod_info:
-            print(f"Could not find mod info for {display_name}")
-            return
-            
-        mod_page = mod_info.get("mod_page")
-        if not mod_page or not mod_page.startswith("https://gamebanana.com"):
-            messagebox.showinfo("Update Check", "This mod does not support updating.")
-            return
-            
-        try:
-            # Use the new centralized function to get the version
-            gb_version = Util.get_gb_mod_version(mod_page)
-            if not gb_version:
-                messagebox.showwarning("Update Check", "Could not find version information for this mod on GameBanana.", parent=self)
-                return
+    # --- Settings Tab Methods ---
 
-            print(f"Found version: {gb_version}")
-            local_version = mod_info.get("version", "1.0")
-            
-            if Util.is_newer_version(local_version, gb_version):
-                self.show_mod_update_prompt(mod_page, display_name, local_version, gb_version, mod_folder)
-            else:
-                messagebox.showinfo("No Updates Found", f"'{display_name}' is already up to date (v{local_version}).", parent=self)
-                
-        except Exception as e:
-            messagebox.showerror("Update Check Error", f"Failed to check for updates: {str(e)}", parent=self)
-            
-    def show_mod_update_prompt(self, mod_page, mod_name, current_version, new_version, mod_folder_name):
-        ModUpdatePromptWindow(self, mod_page, mod_name, current_version, new_version, mod_folder_name)
+    def open_credits(self):
+        dialog = CreditsWindow(self)
+        dialog.exec()
 
-    def edit_selected_mod_info(self):
-        print("Editing mod info.json")
-        sel = self.tree.selection()
-        if not sel:
-            return
-        tree_id = sel[0]
-        # The tree_id is the folder name
-        folder_name = tree_id
-        display_name = self.tree.item(tree_id, "values")[2]
-
-        mod_folder = os.path.join(self.cfg["mods_folder"], folder_name)
-        info_path  = os.path.join(mod_folder, "info.json")
-        data = Util.read_mod_info(mod_folder) or {} # Ensure data is a dict
-
-        EditModWindow(self, display_name, data, folder_name, tree_id)
-
-    def open_settings(self):
-        """Switches to the settings tab."""
-        self.notebook.select(self.settings_tab_frame)
-
-    def open_credits(self, settings_win=None):
-        if settings_win:
-            settings_win.destroy()
-        CreditsWindow(self)
-
-    # --- Methods moved from SettingsWindow ---
-    def on_check_mod_updates(self): # Renamed from on_check_mod_updates in SettingsWindow
-        self.check_all_mod_updates(manual_check=True)
-
-    def on_toggle_logs(self):
-        enabled = self.show_logs_var.get()
+    def on_toggle_logs(self, enabled):
         self.cfg["show_cmd_logs"] = enabled
         Config.save_config(self.cfg)
         if enabled:
             Config.show_console()
         else:
-            Config.hide_console() 
-    
+            Config.hide_console()
+
     def on_change_mods_folder(self):
-        new_folder = filedialog.askdirectory(
-            title="Select a folder to store your mods",
-            initialdir=self.cfg["mods_folder"]
-        )
-        if not new_folder:
-            return
-        self.mods_folder_var.set(new_folder)
-        self.cfg["mods_folder"] = new_folder
-        Config.save_config(self.cfg)
-        # Trigger a refresh on the main window to reflect the change
-        self.refresh()
+        new_folder = QFileDialog.getExistingDirectory(self, "Select a folder to store your mods", self.cfg["mods_folder"])
+        if new_folder:
+            self.mods_folder_var.setText(new_folder)
+            self.cfg["mods_folder"] = new_folder
+            Config.save_config(self.cfg)
+            self.refresh()
 
     def on_change_game_root(self):
-        new_root = filedialog.askdirectory(
-            title="Select Crossworlds Install Folder",
-            initialdir=self.cfg["game_root"]
-        )
-        if not new_root:
+        new_root = QFileDialog.getExistingDirectory(self, "Select Crossworlds Install Folder", self.cfg["game_root"])
+        if new_root:
+            self.game_root_var.setText(new_root)
+            self.cfg["game_root"] = new_root
+            self.cfg["game_mods_folder"] = os.path.join(new_root, "UNION", "Content", "Paks", "~mods")
+            Config.save_config(self.cfg)
+            print("Updated root folder")
+
+    # --- Profile Management Methods ---
+
+    def update_profile_selector(self):
+        profiles = self.profile_manager.get_profile_names()
+        active_profile = self.profile_manager.get_active_profile_name()
+        self.profile_selector.clear()
+        self.profile_selector.addItems(profiles)
+        self.profile_selector.setCurrentText(active_profile)
+
+    def on_profile_change(self):
+        new_profile = self.profile_selector.currentText()
+        if self.profile_manager.set_active_profile(new_profile):
+            self.refresh()
+
+    def add_profile(self):
+        new_name, ok = QInputDialog.getText(self, "New Profile", "Enter a name for the new profile:")
+        if ok and new_name:
+            if self.profile_manager.create_profile(new_name):
+                self.update_profile_selector()
+                self.refresh()
+            else:
+                QMessageBox.critical(self, "Error", "A profile with this name already exists or the name is invalid.")
+
+    def rename_profile(self):
+        old_name = self.profile_manager.get_active_profile_name()
+        if old_name == self.profile_manager.DEFAULT_PROFILE_NAME:
+            QMessageBox.critical(self, "Error", "The 'Default' profile cannot be renamed.")
             return
-        self.game_root_var.set(new_root)
-        self.cfg["game_root"] = new_root
-        self.cfg["game_mods_folder"] = os.path.join(new_root, "UNION", "Content", "Paks", "~mods")
-        Config.save_config(self.cfg)
-        print("Updated root folder")
+
+        new_name, ok = QInputDialog.getText(self, "Rename Profile", f"Enter a new name for '{old_name}':", text=old_name)
+        if ok and new_name and new_name != old_name:
+            if self.profile_manager.rename_profile(old_name, new_name):
+                self.update_profile_selector()
+            else:
+                QMessageBox.critical(self, "Error", "A profile with this name already exists or the name is invalid.")
+
+    def delete_profile(self):
+        profile_to_delete = self.profile_manager.get_active_profile_name()
+
+        if profile_to_delete == self.profile_manager.DEFAULT_PROFILE_NAME:
+            QMessageBox.critical(self, "Error", "The 'Default' profile cannot be deleted.")
+            return
+        if len(self.profile_manager.get_profile_names()) <= 1:
+            QMessageBox.critical(self, "Error", "You cannot delete the last profile.")
+            return
+
+        reply = QMessageBox.question(self, "Confirm Delete", f"Are you sure you want to delete the active profile '{profile_to_delete}'?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.Yes:
+            if self.profile_manager.delete_profile(profile_to_delete):
+                self.update_profile_selector()
+                self.refresh()
+
+    # --- Browse Mods Tab Methods ---
+
+    def _on_browse_tab_selected(self, index):
+        """Fetch initial mod data only when the 'Browse Mods' tab is selected for the first time."""
+        if self.notebook.tabText(index) == "Browse Mods" and not self.browse_mods_data:
+            self.fetch_browse_mods()
+
+    def fetch_browse_mods(self, page=1):
+        """Fetches and displays mods from GameBanana in a background thread."""
+        print(f"[DEBUG] fetch_browse_mods called with page={page}")
+        # Clear existing cards and show loading message
+        self._clear_card_layout()
+        loading_label = QLabel("<h2>Loading...</h2>")
+        loading_label.setAlignment(Qt.AlignCenter)
+        self.card_layout.addWidget(loading_label, 0, 0, 1, 4)
+
+        self.browse_current_page = page
+        self.browse_page_label.setText(f"Page {self.browse_current_page}")
+        self.browse_prev_btn.setEnabled(page > 1)
+        
+        search_query = self.browse_search_entry.text()
+        
+        # Disable filters during search for better UX
+        is_searching = bool(search_query)
+        self.browse_filter_combo.setEnabled(not is_searching)
+        self.browse_section_combo.setEnabled(not is_searching)
+
+        sort_param = self.browse_filter_combo.currentText()
+        section_id = self.sections.get(self.browse_section_combo.currentText())
+
+        print(f"[DEBUG] Starting worker thread with sort='{sort_param}', page={self.browse_current_page}, search='{search_query}', section={section_id}")
+
+        threading.Thread(
+            target=self._fetch_browse_mods_worker,
+            args=(sort_param, self.browse_current_page, search_query, section_id),
+            daemon=True
+        ).start()
+
+    def _fetch_browse_mods_worker(self, sort, page, search, section_id):
+        try:
+            # Game ID for "Sonic Racing Crossworlds"
+            game_id = 21640
+            mods, metadata = [], {}
+
+            # Search overrides all other filters and uses the Subfeed endpoint.
+            if search:
+                mods, metadata = Util.get_gb_mod_list(game_id, 'default', page, search, section_id)
+            # If a section is selected, we must use the Subfeed endpoint as it supports category filtering.
+            elif section_id:
+                sort_map = { "Top": "default", "Newest": "new", "Most Liked": "popular", "Featured": "featured", "Community Spotlight": "spotlight" }
+                subfeed_sort = sort_map.get(sort, "default")
+                mods, metadata = Util.get_gb_mod_list(game_id, subfeed_sort, page, None, section_id)
+            # Use specialized, more curated endpoints only when no section is selected.
+            else:
+                mods, metadata = Util.fetch_specialized_lists(game_id, sort, page)
+
+            QApplication.instance().postEvent(self, Util.ModListFetchEvent((mods, metadata)))
+        except Exception as e:
+            error_message = f"Failed to fetch mods: {e}"
+            print(error_message)
+            QApplication.instance().postEvent(self, Util.ModListFetchEvent([error_message]))
+
+    def _clear_card_layout(self):
+        """Removes all widgets from the card layout, ensuring threads are stopped."""
+        while self.card_layout.count():
+            child = self.card_layout.takeAt(0)
+            if child.widget():
+                # Explicitly stop any background tasks before deleting
+                if hasattr(child.widget(), 'stop'):
+                    child.widget().stop()
+                child.widget().deleteLater()
+
+    def _update_browse_cards(self, mods):
+        mods, metadata = mods
+        self._clear_card_layout()
+        print(f"[DEBUG] _update_browse_cards received: {mods}")
+        self.browse_mods_data = []
+
+        # Update pagination buttons based on metadata
+        self.browse_next_btn.setEnabled(not metadata.get('_bIsComplete', True))
+
+        if not mods or (isinstance(mods, list) and len(mods) > 0 and isinstance(mods[0], str)):
+            error_message = mods[0] if mods else "No mods found."
+            print(f"[DEBUG] No mods found or error received. Displaying: '{error_message}'")
+            error_label = QLabel(f"<h2>{error_message}</h2>")
+            error_label.setAlignment(Qt.AlignCenter)
+            self.card_layout.addWidget(error_label, 0, 0, 1, 4)
+            return
+
+        print(f"[DEBUG] Populating browse tree with {len(mods)} mods.")
+        self.browse_mods_data = mods
+        
+        # Determine number of columns based on window width
+        cols = max(1, self.scroll_area.width() // 230)
+        for i, mod_data in enumerate(mods):
+            row, col = divmod(i, cols)
+            card = ModCard(mod_data, self.add_mod_from_url)
+            self.card_layout.addWidget(card, row, col)
+
+    def _reflow_browse_cards(self):
+        """Rearranges existing mod cards to fit the new window size without fetching new data."""
+        # Only reflow if the browse tab is visible and has cards.
+        if self.notebook.tabText(self.notebook.currentIndex()) != "Browse Mods" or self.card_layout.count() == 0:
+            return
+
+        # Check if the first item is a label (e.g., "Loading...", "No mods found.")
+        first_item = self.card_layout.itemAt(0).widget()
+        if isinstance(first_item, QLabel):
+            return # Don't try to reflow a status message
+
+        print("[DEBUG] Reflowing mod cards due to resize.")
+
+        # Collect all existing card widgets
+        cards = []
+        while self.card_layout.count():
+            child = self.card_layout.takeAt(0)
+            if child.widget():
+                cards.append(child.widget())
+
+        # Recalculate columns and re-add the widgets
+        cols = max(1, self.scroll_area.width() // 230)
+        for i, card in enumerate(cards):
+            row, col = divmod(i, cols)
+            self.card_layout.addWidget(card, row, col)
+
+    def browse_prev_page(self):
+        if self.browse_current_page > 1:
+            self.fetch_browse_mods(page=self.browse_current_page - 1)
+
+    def browse_next_page(self):
+        self.fetch_browse_mods(page=self.browse_current_page + 1)
+
+    def clear_browse_search(self):
+        """Clears the search bar and refreshes the view."""
+        self.browse_search_entry.clear()
+        self.fetch_browse_mods(page=1)
+
+if __name__ == '__main__':
+    # This is for testing purposes
+    app = QApplication(sys.argv)
+    # You would need to provide some sample item_data here to run this directly
+    window = CrossPatchWindow()
+    window.show()
+    sys.exit(app.exec())

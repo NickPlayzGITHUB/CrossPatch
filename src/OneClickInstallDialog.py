@@ -1,144 +1,112 @@
-import tkinter as tk
-from tkinter import ttk
+import sys
 import threading
+import requests
 import platform
 import ctypes
-import requests
-from io import BytesIO
 
-import Util
+from PySide6.QtWidgets import (
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QDialogButtonBox, QFrame
+)
+from PySide6.QtGui import QPixmap, QImage, QFont
+from PySide6.QtCore import Qt, Signal, QObject
 
-# --- Optional Pillow dependency for image handling ---
-try:
-    from PIL import Image, ImageTk
-    PILLOW_SUPPORT = True
-except ImportError:
-    PILLOW_SUPPORT = False
+class ImageLoader(QObject):
+    """Worker object to load an image in a separate thread."""
+    image_loaded = Signal(QPixmap)
+    image_failed = Signal(str)
 
-# --- Windows-specific structures for flashing the window ---
-if platform.system() == "Windows":
-    class FLASHWINFO(ctypes.Structure):
-        _fields_ = [
-            ("cbSize", ctypes.c_uint),
-            ("hwnd", ctypes.c_void_p),
-            ("dwFlags", ctypes.c_uint),
-            ("uCount", ctypes.c_uint),
-            ("dwTimeout", ctypes.c_uint)
-        ]
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
 
-class OneClickInstallDialog(tk.Toplevel):
+    def run(self):
+        try:
+            response = requests.get(self.url, timeout=10)
+            response.raise_for_status()
+            image = QImage()
+            image.loadFromData(response.content)
+            pixmap = QPixmap.fromImage(image)
+            self.image_loaded.emit(pixmap)
+        except Exception as e:
+            print(f"Failed to load image for dialog: {e}")
+            self.image_failed.emit("Failed to load image.")
+
+class OneClickInstallDialog(QDialog):
     def __init__(self, parent, item_data):
         super().__init__(parent)
-        self.transient(parent)
-        self.grab_set()
 
         self.item_data = item_data
         mod_name = self.item_data.get('_sName', 'Unknown Mod')
 
-        self.title("Confirm Download")
-        # self.geometry("400x320") # Removed fixed size to allow auto-sizing
-        self.resizable(False, False)
-        self.confirmed = False
+        self.setWindowTitle("Confirm Download")
+        self.setModal(True)
 
-        main_frame = ttk.Frame(self, padding=15)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_layout = QVBoxLayout(self)
 
         # --- Image ---
-        # Create a frame to reserve space for the image, preventing the window from being too small initially.
-        image_placeholder = ttk.Frame(main_frame, width=360, height=180)
-        image_placeholder.pack(pady=(0, 15))
-        image_placeholder.pack_propagate(False) # Prevent frame from shrinking
-        self.image_label = ttk.Label(image_placeholder, text="Loading image..." if PILLOW_SUPPORT else "Pillow not installed.")
-        self.image_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
-        if PILLOW_SUPPORT:
-            threading.Thread(target=self._load_image, daemon=True).start()
+        self.image_label = QLabel("Loading image...")
+        self.image_label.setFixedSize(360, 180)
+        self.image_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(self.image_label)
 
         # --- Mod Name ---
-        name_label = ttk.Label(main_frame, text=mod_name, font=("Segoe UI", 12, "bold"), wraplength=370, justify=tk.CENTER)
-        name_label.pack(pady=(0, 5))
+        name_label = QLabel(mod_name)
+        font = QFont()
+        font.setBold(True)
+        font.setPointSize(12)
+        name_label.setFont(font)
+        name_label.setWordWrap(True)
+        name_label.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(name_label)
 
         # --- Confirmation Text ---
-        confirm_text = ttk.Label(main_frame, text="Do you want to download this mod?", justify=tk.CENTER)
-        confirm_text.pack()
+        confirm_text = QLabel("Do you want to download this mod?")
+        confirm_text.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(confirm_text)
 
-        # --- Bottom Buttons ---
-        btn_frame = ttk.Frame(self, padding=(15, 10))
-        btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
-        btn_frame.columnconfigure(0, weight=1)
-        btn_frame.columnconfigure(1, weight=1)
+        # --- Buttons ---
+        button_box = QDialogButtonBox(QDialogButtonBox.Yes | QDialogButtonBox.No)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        main_layout.addWidget(button_box)
 
-        yes_btn = ttk.Button(btn_frame, text="Yes", command=self.on_confirm, style="Accent.TButton")
-        yes_btn.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        no_btn = ttk.Button(btn_frame, text="No", command=self.on_cancel)
-        no_btn.grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        # --- Image Loading ---
+        self._start_image_load()
 
-        # --- Finalize Window ---
-        Util.center_window(self)
-        self.focus_force() # Force focus on the dialog
-
-        # On Windows, flash the taskbar icon to alert the user
+        # --- Flash Window ---
         if platform.system() == "Windows":
-            try:
-                hwnd = self.winfo_id()
-                info = FLASHWINFO()
-                info.cbSize = ctypes.sizeof(info)
-                info.hwnd = hwnd
-                info.dwFlags = 3 | 12  # FLASHW_ALL | FLASHW_TIMERNOFG
-                info.uCount = 0 # Flash indefinitely
-                info.dwTimeout = 0
-                ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
-            except Exception as e:
-                print(f"Could not flash window: {e}")
+            QApplication.alert(self)
+        
+        # Make the dialog non-resizable after all widgets are added
+        self.setFixedSize(self.sizeHint())
 
-        self.wait_window(self)
+    def _start_image_load(self):
+        preview_media = self.item_data.get('_aPreviewMedia', {})
+        images = preview_media.get('_aImages', [])
+        if not images:
+            self.on_image_failed("No preview image.")
+            return
 
-    def _load_image(self):
-        """Downloads and displays the mod's preview image in a separate thread."""
-        try:
-            preview_media = self.item_data.get('_aPreviewMedia', {})
-            images = preview_media.get('_aImages', [])
-            if not images:
-                self.after(0, lambda: self.image_label.config(text="No preview image."))
-                return
+        base_url = images[0].get('_sBaseUrl')
+        file_url = images[0].get('_sFile')
+        if not base_url or not file_url:
+            self.on_image_failed("Invalid image URL.")
+            return
 
-            base_url = images[0].get('_sBaseUrl')
-            file_url = images[0].get('_sFile')
-            if not base_url or not file_url:
-                self.after(0, lambda: self.image_label.config(text="Invalid image URL."))
-                return
+        image_url = f"{base_url}/{file_url}"
+        self.image_loader = ImageLoader(image_url)
+        self.thread = threading.Thread(target=self.image_loader.run, daemon=True)
+        self.image_loader.image_loaded.connect(self.on_image_loaded)
+        self.image_loader.image_failed.connect(self.on_image_failed)
+        self.thread.start()
 
-            image_url = f"{base_url}/{file_url}"
-            
-            response = requests.get(image_url, timeout=10)
-            response.raise_for_status()
-            
-            img = Image.open(BytesIO(response.content))
-            
-            # Resize image to fit a max height/width (e.g., 180px)
-            img.thumbnail((360, 180), Image.Resampling.LANCZOS)
+    def on_image_loaded(self, pixmap):
+        self.image_label.setPixmap(pixmap.scaled(
+            self.image_label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        ))
 
-            photo = ImageTk.PhotoImage(img)
-            self.after(0, self._update_image_label, photo)
-
-        except Exception as e:
-            print(f"Failed to load image for dialog: {e}")
-            self.after(0, lambda: self.image_label.config(text="Failed to load image."))
-
-    def _update_image_label(self, photo):
-        """Updates the image label and stores a reference to the photo."""
-        self.image_label.image = photo # Keep a reference!
-        self.image_label.config(image=photo, text="")
-        # After setting the image, re-center the window to correct any minor position shifts.
-        self.update_idletasks()
-        Util.center_window(self)
-
-    def on_confirm(self):
-        self.confirmed = True
-        self.destroy()
-
-    def on_cancel(self):
-        self.confirmed = False
-        self.destroy()
-
-    def was_confirmed(self):
-        return self.confirmed
+    def on_image_failed(self, message):
+        self.image_label.setText(message)

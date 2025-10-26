@@ -1,39 +1,31 @@
-import tkinter as tk
-from tkinter import ttk
+from PySide6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QDialogButtonBox
+)
+from PySide6.QtCore import Qt
 
-import Util
-
-class ModUpdatePromptWindow(tk.Toplevel):
-    def __init__(self, parent, mod_page, mod_name, current_version, new_version, mod_folder_name):
+class ModUpdatePromptWindow(QDialog):
+    def __init__(self, parent, mod_name, current_version, new_version):
         super().__init__(parent)
-        self.parent = parent
-        self.mod_folder_name = mod_folder_name
 
-        self.title("Update Available")
-        self.resizable(False, False)
-        
-        ttk.Label(
-            self,
-            text=f"A new version of {mod_name} is available!\n\n"
-                 f"Current version: v{current_version}\n"
-                 f"New version: v{new_version}"
-        ).pack(padx=12, pady=(12, 6))
-        
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(padx=12, pady=(0, 12))
-        
-        def on_update():
-            self.destroy()
-            self.parent.update_mod_from_url(mod_page, self.mod_folder_name)
-            
-        def on_ignore():
-            self.destroy()
-            
-        ttk.Button(btn_frame, text="Update", command=on_update)\
-            .pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(btn_frame, text="Ignore", command=on_ignore)\
-            .pack(side=tk.LEFT)
-            
-        self.attributes("-topmost", True)
-        
-        Util.center_window(self)
+        self.setWindowTitle("Update Available")
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+
+        message = (
+            f"A new version of {mod_name} is available!\n\n"
+            f"Current version: v{current_version}\n"
+            f"New version: v{new_version}"
+        )
+        layout.addWidget(QLabel(message))
+
+        button_box = QDialogButtonBox()
+        update_button = button_box.addButton("Update", QDialogButtonBox.AcceptRole)
+        ignore_button = button_box.addButton("Ignore", QDialogButtonBox.RejectRole)
+
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+
+        layout.addWidget(button_box)
+
+        self.setAttribute(Qt.WA_DeleteOnClose)

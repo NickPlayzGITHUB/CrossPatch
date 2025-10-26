@@ -1,46 +1,45 @@
-import tkinter as tk
-from tkinter import ttk
+import sys
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtGui import QFont
 
-import Util
-
-class CreditsWindow(tk.Toplevel):
-    def __init__(self, parent):
+class CreditsWindow(QDialog):
+    def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.withdraw()
+        self.setWindowTitle("Credits")
+        self.setModal(True)
 
-        frame = ttk.Frame(self, padding=20)
-        frame.pack(fill=tk.BOTH, expand=True)
+        layout = QVBoxLayout()
 
-        ttk.Label(frame, text="NockCS", font=("Segoe UI", 20, "bold"))\
-            .pack(anchor="center", pady=(0,4))
-        ttk.Label(frame, text="Lead Developer/Programmer", font=("Segoe UI", 10))\
-            .pack(anchor="center", pady=(0,12))
-        
-        ttk.Label(frame, text="RED1", font=("Segoe UI", 16, "bold"))\
-            .pack(anchor="center", pady=(0,4))
-        ttk.Label(frame, text="Secondary Main Programmer", font=("Segoe UI", 10))\
-            .pack(anchor="center", pady=(0,12))
+        credits_data = [
+            ("NockCS", "Lead Developer/Programmer", True),
+            ("RED1", "Secondary Main Programmer", True),
+            ("AntiApple4life", "Linux Support Programmer", True),
+            ("Ben Thalmann", "Cleaned Up Codebase", True),
+        ]
 
-        ttk.Label(frame, text="AntiApple4life", font=("Segoe UI", 16, "bold"))\
-            .pack(anchor="center", pady=(0,4))
-        ttk.Label(frame, text="Linux Support Programmer", font=("Segoe UI", 10))\
-            .pack(anchor="center", pady=(0,12))
-        
-        ttk.Label(frame, text="Ben Thalmann", font=("Segoe UI", 16, "bold"))\
-            .pack(anchor="center", pady=(0,4))
-        ttk.Label(frame, text="Cleaned Up Codebase", font=("Segoe UI", 10))\
-            .pack(anchor="center", pady=(0,12))
-        
+        for name, title, is_bold in credits_data:
+            name_label = QLabel(name)
+            name_font = QFont()
+            name_font.setPointSize(16)
+            name_font.setBold(is_bold)
+            name_label.setFont(name_font)
+            layout.addWidget(name_label)
 
-        ttk.Button(frame, text="Close", command=self.destroy)\
-            .pack(pady=(20,0))
-        
-        self.title("Credits")
-        self.resizable(False, False)
-        self.update_idletasks()
-        Util.center_window(self)
-        self.deiconify()
-        self.transient(parent)
-        self.grab_set()
-        
+            title_label = QLabel(title)
+            title_font = QFont()
+            title_font.setPointSize(10)
+            title_label.setFont(title_font)
+            layout.addWidget(title_label)
+
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button)
+
+        self.setLayout(layout)
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    window = CreditsWindow()
+    window.show()
+    sys.exit(app.exec())

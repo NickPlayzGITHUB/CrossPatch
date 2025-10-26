@@ -3,12 +3,13 @@ import socket
 import sys
 import os
 
+from PySide6.QtWidgets import QApplication
 from CrossPatch import CrossPatchWindow
 import Util
 import Config # This will now set up config paths on import
 
 SINGLE_INSTANCE_PORT = 38471 # A random, hopefully unused port
-if __name__ == "__main__":    
+if __name__ == "__main__":
     # Try to bind to a port to enforce a single instance
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -32,25 +33,26 @@ if __name__ == "__main__":
     # This is the primary instance.
     Config.register_url_protocol()
 
-    app = CrossPatchWindow(instance_socket=sock)
+    app = QApplication(sys.argv)
+    # Apply a dark theme
+    try:
+        import qdarktheme
+        app.setStyleSheet(qdarktheme.load_stylesheet("dark"))
+    except ImportError:
+        print("qdarktheme not found. Using default system theme.")
+
+    window = CrossPatchWindow(instance_socket=sock)
 
     # Handle initial command-line argument if app was launched with one
     if len(sys.argv) > 1:
         url = sys.argv[1]
-        # Schedule the download to run after the main window is ready
-        app.after(500, lambda: app.handle_protocol_url(url))
+        window.handle_protocol_url(url)
 
     # Start the thread that checks for app updates, unless disabled by an environment variable.
     if os.environ.get("CROSSPATCH_DISABLE_UPDATES") != "1":
-        threading.Thread(target=lambda: Util.check_for_updates(app), daemon=True).start()
+        threading.Thread(target=lambda: Util.check_for_updates_pyside(window), daemon=True).start()
     else:
         print("Auto-updater is disabled via CROSSPATCH_DISABLE_UPDATES environment variable.")
 
-    # Start the thread that checks for mod updates
-    threading.Thread(target=lambda: app.check_all_mod_updates(), daemon=True).start()
-
-    # Start the main UI loop
-    app.mainloop()
-
-    # Clean up the socket on exit
-    sock.close()
+    window.show()
+    sys.exit(app.exec())

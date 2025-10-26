@@ -1,96 +1,77 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
-import os
-import json
+import sys
+from PySide6.QtWidgets import (
+    QApplication, QDialog, QVBoxLayout, QFormLayout, QLineEdit,
+    QComboBox, QDialogButtonBox, QLabel
+)
 
-import Util
-import Config
-
-class EditModWindow(tk.Toplevel):
-    def __init__(self, parent, display_name, data, folder_name, tree_id):
+class EditModWindow(QDialog):
+    def __init__(self, parent, display_name, data):
         super().__init__(parent)
 
-        self.withdraw()
-        self.title(f"Edit {display_name} info.json")
-    
-        frm = ttk.Frame(self, padding=12)
-        frm.pack(fill=tk.BOTH, expand=True)
+        self.setWindowTitle(f"Edit {display_name} info.json")
+        self.setModal(True)
 
-        original_mod_type = data.get("mod_type", "pak")
-        name_var    = tk.StringVar(value=data.get("name", display_name))
-        version_var = tk.StringVar(value=data.get("version", "1.0"))
-        author_var  = tk.StringVar(value=data.get("author", "Unknown"))
-        mod_type_var = tk.StringVar(value=data.get("mod_type", "pak"))
-        mod_page_var = tk.StringVar(value=data.get("mod_page", ""))
+        self.original_mod_type = data.get("mod_type", "pak")
+        self.new_data = None
 
-        ttk.Label(frm, text="Name: ").grid(row=0, column=0, sticky="e", pady=4)
-        ttk.Entry(frm, textvariable=name_var, width=40)\
-           .grid(row=0, column=1, sticky="w", pady=4)
+        # --- Layouts ---
+        main_layout = QVBoxLayout(self)
+        form_layout = QFormLayout()
+        main_layout.addLayout(form_layout)
 
-        ttk.Label(frm, text="Version: ").grid(row=1, column=0, sticky="e", pady=4)
-        ttk.Entry(frm, textvariable=version_var, width=40)\
-           .grid(row=1, column=1, sticky="w", pady=4)
+        # --- Widgets ---
+        self.name_edit = QLineEdit(data.get("name", display_name))
+        self.version_edit = QLineEdit(data.get("version", "1.0"))
+        self.author_edit = QLineEdit(data.get("author", "Unknown"))
+        self.mod_page_edit = QLineEdit(data.get("mod_page", ""))
 
-        ttk.Label(frm, text="Author: ").grid(row=2, column=0, sticky="e", pady=4)
-        ttk.Entry(frm, textvariable=author_var, width=40)\
-           .grid(row=2, column=1, sticky="w", pady=4)
+        self.mod_type_combo = QComboBox()
+        self.mod_type_combo.addItems(["pak", "ue4ss-script", "ue4ss-logic"])
+        self.mod_type_combo.setCurrentText(self.original_mod_type)
 
-        ttk.Label(frm, text="Mod Type: ").grid(row=3, column=0, sticky="e", pady=4)
-        mod_type_combo = ttk.Combobox(frm, textvariable=mod_type_var, values=["pak", "ue4ss-script", "ue4ss-logic"], state="readonly", width=38)
-        mod_type_combo.grid(row=3, column=1, sticky="w", pady=4)
+        form_layout.addRow(QLabel("Name:"), self.name_edit)
+        form_layout.addRow(QLabel("Version:"), self.version_edit)
+        form_layout.addRow(QLabel("Author:"), self.author_edit)
+        form_layout.addRow(QLabel("Mod Type:"), self.mod_type_combo)
+        form_layout.addRow(QLabel("Mod Page:"), self.mod_page_edit)
 
-        ttk.Label(frm, text="Mod Page: ").grid(row=4, column=0, sticky="e", pady=4)
-        ttk.Entry(frm, textvariable=mod_page_var, width=40)\
-            .grid(row=4, column=1, sticky="w", pady=4)
+        # --- Buttons ---
+        button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.on_save)
+        button_box.rejected.connect(self.reject)
+        main_layout.addWidget(button_box)
 
-        btnf = ttk.Frame(frm)
-        btnf.grid(row=5, column=0, columnspan=2, pady=(12,0))
+    def on_save(self):
+        self.new_data = {
+            "name": self.name_edit.text().strip(),
+            "version": self.version_edit.text().strip(),
+            "author": self.author_edit.text().strip(),
+            "mod_type": self.mod_type_combo.currentText(),
+            "mod_page": self.mod_page_edit.text().strip()
+        }
+        # Clean up empty fields
+        if not self.new_data["mod_page"]:
+            del self.new_data["mod_page"]
 
-        def on_save(folder=folder_name, item_id=tree_id):
-            new_data = {
-                "name":    name_var.get().strip(),
-                "version": version_var.get().strip(),
-                "author":  author_var.get().strip(),
-                "mod_type": mod_type_var.get(),
-                "mod_page": mod_page_var.get().strip()
-            }
-            # Clean up empty fields
-            if not new_data["mod_page"]:
-                del new_data["mod_page"]
+        self.accept()
 
-            try:
-                with open(os.path.join(Config.config["mods_folder"], folder, "info.json"), "w", encoding="utf-8") as f:
-                    json.dump(new_data, f, indent=2)
-            except Exception as e:
-                messagebox.showerror(f"{e}")
-                return
-            
-            active_profile = parent.profile_manager.get_active_profile()
-            is_enabled = active_profile.get("enabled_mods", {}).get(folder, False)
-            new_mod_type = new_data["mod_type"]
+    def get_data(self):
+        return self.new_data
 
-            # If the mod type changed for an enabled mod, a full refresh is needed
-            # to move it to the correct directory.
-            if is_enabled and new_mod_type != original_mod_type:
-                # Explicitly remove the mod from its old location before refreshing
-                Util.remove_mod_from_game_folders(folder, Config.config)
-                parent.refresh()
-            else: # Otherwise, just update the row in the UI
-                # Get the current values to preserve the update icon
-                current_values = list(parent.tree.item(item_id, "values"))
-                update_char = current_values[0] if current_values else ""
-                check_char = "☑" if is_enabled else "☐"
-                parent.tree.item(item_id, values=(
-                    update_char, check_char, new_data["name"], new_data["version"], new_data["author"], new_mod_type.upper()))
-            self.destroy()
-
-        def on_cancel():
-            self.destroy()
-
-        ttk.Button(btnf, text="Save",   command=on_save).pack(side=tk.LEFT, padx=6)
-        ttk.Button(btnf, text="Cancel", command=on_cancel).pack(side=tk.LEFT)
-
-        Util.center_window(self)
-        self.deiconify()
-        self.transient(parent)
-        self.grab_set()
+if __name__ == '__main__':
+    # Example usage for testing
+    app = QApplication(sys.argv)
+    sample_data = {
+        "name": "My Awesome Mod",
+        "version": "1.2.3",
+        "author": "A. Coder",
+        "mod_type": "pak",
+        "mod_page": "https://gamebanana.com/mods/12345"
+    }
+    dialog = EditModWindow(None, "My Awesome Mod", sample_data)
+    if dialog.exec():
+        print("Saved data:", dialog.get_data())
+        print("Original mod type:", dialog.original_mod_type)
+    else:
+        print("Cancelled")
+    sys.exit(app.exec())
