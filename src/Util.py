@@ -16,6 +16,13 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from Constants import UPDATE_URL, APP_VERSION, STEAM_APP_ID
 from Config import CONFIG_DIR
 
+class ModListFetchEvent(QEvent):
+    """Custom event for when the mod list has been fetched."""
+    EVENT_TYPE = QEvent.Type(QEvent.registerEventType())
+    def __init__(self, mods_data):
+        super().__init__(self.EVENT_TYPE)
+        self.mods_data = mods_data
+
 # --- Handle optional archive dependencies for UE4SS install ---
 try:
     import py7zr
@@ -23,18 +30,11 @@ try:
 except ImportError:
     PY7ZR_SUPPORT = False
 
-class ModListFetchEvent(QEvent):
-    EVENT_TYPE = QEvent.Type(QEvent.User + 1)
-    def __init__(self, mods_data):
-        super().__init__(self.EVENT_TYPE)
-        self.mods_data = mods_data
-
-
 try:
     import rarfile
-    RARFILE_SUPPORT = True
+    UNRAR_SUPPORT = True
 except ImportError:
-    RARFILE_SUPPORT = False
+    UNRAR_SUPPORT = False
 
 def is_packaged():
     """Checks if the application is running as a packaged executable."""
@@ -664,16 +664,24 @@ def extract_archive(archive_path, dest_path, progress_signal=None):
         print("Using py7zr to extract.")
         with py7zr.SevenZipFile(archive_path, 'r') as z_ref:
             z_ref.extractall(path=dest_path)
-    elif archive_format == '.rar' and RARFILE_SUPPORT:
-        print("Using rarfile to extract.")
-        rarfile.RarFile(archive_path).extractall(path=dest_path)
+    elif archive_format == '.rar' and UNRAR_SUPPORT:
+        print("Using unrar to extract.")
+        # Check for a bundled unrar executable in the assets folder first
+        assets_dir = find_assets_dir()
+        unrar_tool_name = "UnRAR.exe" if platform.system() == "Windows" else "unrar"
+        bundled_tool_path = os.path.join(assets_dir, unrar_tool_name)
+
+        if os.path.exists(bundled_tool_path):
+            print(f"Found bundled unrar tool at: {bundled_tool_path}")
+            rarfile.UNRAR_TOOL = bundled_tool_path
+        else:
+            # Fallback to default behavior (searching PATH for 'unrar')
+            rarfile.UNRAR_TOOL = "unrar"
+
+        with rarfile.RarFile(archive_path) as rf:
+            rf.extractall(path=dest_path)
     else:
-        # Fallback to shutil.unpack_archive for other potential formats
-        try:
-            print("Using shutil.unpack_archive as a fallback.")
-            shutil.unpack_archive(archive_path, dest_path)
-        except shutil.ReadError:
-            raise NotImplementedError(f"Unsupported or corrupt archive format: {archive_format}")
+        raise NotImplementedError(f"Unsupported archive format: {archive_format}. Please install the required library if available.")
 
     print("Initial extraction complete.")
 

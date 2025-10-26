@@ -85,6 +85,9 @@ _original_stderr = sys.stderr
 _console_streams = None
 
 def show_console():
+    if platform.system() != "Windows":
+        print("Console toggling is only supported on Windows.")
+        return
     global _console_streams
     try:
         if ctypes.windll.kernel32.AllocConsole():
@@ -101,6 +104,9 @@ def show_console():
         sys.stderr = _original_stderr
 
 def hide_console():
+    if platform.system() != "Windows":
+        # Nothing to do on non-Windows platforms
+        return
     global _console_streams
     try:
         sys.stdout = _original_stdout

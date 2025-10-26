@@ -3,3 +3,4 @@ requests
 pyqtdarktheme
 py7zr
 rarfile
+patool

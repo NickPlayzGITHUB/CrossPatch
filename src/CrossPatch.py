@@ -1023,17 +1023,16 @@ class CrossPatchWindow(QMainWindow):
                 break
 
     def set_dark_title_bar(self):
-        if platform.system() == "Windows":
-            try:
-                hwnd = self.winId()
-                DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-                value = ctypes.c_int(1)
-                ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                    hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE,
-                    ctypes.byref(value), ctypes.sizeof(value)
-                )
-            except Exception as e:
-                print(f"Could not set dark title bar: {e}")
+        """Sets the dark mode title bar on Windows 10/11. Does nothing on other OSes."""
+        if platform.system() != "Windows":
+            return
+        try:
+            hwnd = self.winId()
+            DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+            value = ctypes.c_int(1) # 1 for dark, 0 for light
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value), ctypes.sizeof(value))
+        except Exception as e:
+            print(f"Could not set dark title bar: {e}")
 
     # --- Settings Tab Methods ---
 
