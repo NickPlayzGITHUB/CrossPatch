@@ -73,6 +73,7 @@ class ModConfigDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         main_layout.addWidget(button_box)
+        self.adjustSize()
 
     def accept(self):
         """Update the selections dictionary when 'Save' is clicked."""
