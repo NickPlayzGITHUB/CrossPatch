@@ -632,9 +632,17 @@ class CrossPatchWindow(QMainWindow):
     def on_item_changed(self, item, column):
         """Handles changes to an item, specifically the checkbox state."""
         if column == 1: # 'Enabled' column
+            # If signals are blocked, it means the change is happening during a tree update,
+            # so we should not trigger another update.
+            if self.tree.signalsBlocked():
+                return
+
             mod_folder_name = item.data(0, Qt.UserRole)
             is_enabled = item.checkState(1) == Qt.Checked
             self.profile_manager.set_mod_enabled(mod_folder_name, is_enabled)
+
+            # A manual check/uncheck should re-sort the list.
+            self._update_treeview()
 
     def on_right_click(self, pos):
         """Handles right-clicks on the treeview to show the context menu."""
@@ -697,54 +705,87 @@ class CrossPatchWindow(QMainWindow):
         QTreeWidget.mousePressEvent(self.tree, event)
 
     def _update_treeview(self, preserve_selection=True):
-        # --- Preserve Selection ---
-        selected_mod_folder = None
-        if preserve_selection:
-            current_item = self.tree.currentItem()
-            if current_item:
-                selected_mod_folder = current_item.data(0, Qt.UserRole)
+        # Block signals to prevent on_item_changed from firing recursively
+        self.tree.blockSignals(True)
+        try:
+            # --- Preserve Selection ---
+            selected_mod_folder = None
+            if preserve_selection:
+                current_item = self.tree.currentItem()
+                if current_item:
+                    selected_mod_folder = current_item.data(0, Qt.UserRole)
 
-        search_text = self.search_entry.text().lower()
-        active_profile = self.profile_manager.get_active_profile()
-        enabled_mods = active_profile.get("enabled_mods", {})
-        updatable_mod_names = {v['name'] for v in self.updatable_mods.values()}
+            search_text = self.search_entry.text().lower()
+            active_profile = self.profile_manager.get_active_profile()
+            enabled_mods_map = active_profile.get("enabled_mods", {})
+            mod_priority = active_profile.get("mod_priority", [])
+            updatable_mod_names = {v['name'] for v in self.updatable_mods.values()}
 
-        self.tree.setColumnHidden(0, not self.updatable_mods)
-        
-        self.tree.clear()
-        for i, mod_folder_name in enumerate(active_profile.get("mod_priority", [])):
-            info = Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod_folder_name))
-            name = info.get("name", mod_folder_name)
-            version = info.get("version", "1.0")
-            author = info.get("author", "Unknown")
-            mod_type = info.get("mod_type", "pak").upper()
+            # --- Sorting Logic ---
+            enabled_mods_ordered = []
+            disabled_mods_with_info = []
 
-            if search_text and not any(search_text in s.lower() for s in [name, version, author, mod_type]):
-                continue
+            # Batch-read all mod info to minimize file I/O
+            all_mods_info = {
+                mod_folder_name: Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod_folder_name))
+                for mod_folder_name in mod_priority
+            }
 
-            is_enabled = enabled_mods.get(mod_folder_name, False)
+            # Preserve order for enabled mods, collect disabled mods
+            for mod_folder_name in mod_priority:
+                info = all_mods_info.get(mod_folder_name, {})
+                name = info.get("name", mod_folder_name)
 
-            item = QTreeWidgetItem(["", "", name, version, author, mod_type])
-            item.setData(0, Qt.UserRole, mod_folder_name) # Store folder name in item
+                # Filter based on search text
+                version = info.get("version", "1.0")
+                author = info.get("author", "Unknown")
+                mod_type = info.get("mod_type", "pak").upper()
+                if search_text and not any(search_text in s.lower() for s in [name, version, author, mod_type]):
+                    continue
 
-            # Enabled Checkbox
-            item.setCheckState(1, Qt.Checked if is_enabled else Qt.Unchecked)
+                if enabled_mods_map.get(mod_folder_name, False):
+                    enabled_mods_ordered.append(mod_folder_name)
+                else:
+                    disabled_mods_with_info.append((name, mod_folder_name))
 
-            # Update Icon
-            if name in updatable_mod_names:
-                item.setText(0, "⬆️")
-                font = item.font(2)
-                font.setBold(True)
-                item.setFont(2, font)
-                item.setForeground(2, QColor("springgreen"))
+            # Sort disabled mods alphabetically by name
+            disabled_mods_with_info.sort(key=lambda x: x[0].lower())
+            
+            # The final list of mod folders to display
+            display_order = enabled_mods_ordered + [mod_folder for name, mod_folder in disabled_mods_with_info]
+            
+            # --- Tree Update ---
+            self.tree.setColumnHidden(0, not self.updatable_mods)
+            self.tree.clear()
 
-            self.tree.addTopLevelItem(item)
+            for mod_folder_name in display_order:
+                info = all_mods_info.get(mod_folder_name, {})
+                name = info.get("name", mod_folder_name)
+                version = info.get("version", "1.0")
+                author = info.get("author", "Unknown")
+                mod_type = info.get("mod_type", "pak").upper()
+                is_enabled = enabled_mods_map.get(mod_folder_name, False)
 
-            # --- Restore Selection ---
-            if mod_folder_name == selected_mod_folder:
-                self.tree.setCurrentItem(item)
+                item = QTreeWidgetItem(["", "", name, version, author, mod_type])
+                item.setData(0, Qt.UserRole, mod_folder_name)
 
-        print("Treeview updated")
+                item.setCheckState(1, Qt.Checked if is_enabled else Qt.Unchecked)
+
+                if name in updatable_mod_names:
+                    item.setText(0, "⬆️")
+                    font = item.font(2)
+                    font.setBold(True)
+                    item.setFont(2, font)
+                    item.setForeground(2, QColor("springgreen"))
+
+                self.tree.addTopLevelItem(item)
+
+                if mod_folder_name == selected_mod_folder:
+                    self.tree.setCurrentItem(item)
+
+            print("Treeview updated")
+        finally:
+            self.tree.blockSignals(False)
 
     def save_and_refresh(self):
         self.refresh()
