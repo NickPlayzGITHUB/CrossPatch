@@ -196,6 +196,9 @@ class ModCard(QFrame):
 
 class ModTreeWidget(QTreeWidget):
     """A custom QTreeWidget that forces all drops to be insertions, not parenting."""
+    # Custom signal to be emitted after a successful drag-and-drop reorder.
+    orderChanged = Signal()
+
     def dropEvent(self, event: QDropEvent):
         if not self.selectedItems():
             return
@@ -214,6 +217,9 @@ class ModTreeWidget(QTreeWidget):
             self.insertTopLevelItem(drop_index, taken_item)
             # Ensure the newly moved item is selected
             self.setCurrentItem(taken_item)
+            # Emit our custom signal now that the order has changed.
+            self.orderChanged.emit()
+
 
 class CrossPatchWindow(QMainWindow):
     # Signal to handle protocol URL from a non-GUI thread
@@ -326,8 +332,8 @@ class CrossPatchWindow(QMainWindow):
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents) # Type
         self.tree.setColumnHidden(0, True) # Hide update column by default
 
-        # Set up drag and drop reordering
-        self.tree.model().rowsMoved.connect(self.on_drag_end)
+        # Connect to the custom signal for drag-and-drop reordering.
+        self.tree.orderChanged.connect(self.on_drag_end)
         self.tree.viewport().setAcceptDrops(True)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.on_right_click)
@@ -606,7 +612,7 @@ class CrossPatchWindow(QMainWindow):
         if self.notebook.tabText(self.notebook.currentIndex()) == "Installed Mods":
             self.search_btn.toggle()
 
-    def on_drag_end(self, parent, start, end, destination, row):
+    def on_drag_end(self):
         """Finalizes the drag operation, saving the new order."""
         # The move is already visually done by QTreeWidget. We just need to save it.
         new_priority = [self.tree.topLevelItem(i).data(0, Qt.UserRole) for i in range(self.tree.topLevelItemCount())]
