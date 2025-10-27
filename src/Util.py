@@ -108,6 +108,18 @@ def get_gb_item_details_from_url(url):
 
     return (None, None)
 
+def get_gb_page_url_from_item_data(item_data):
+    """Constructs a full GameBanana page URL from item data."""
+    profile_url = item_data.get('_sProfileUrl')
+    if profile_url:
+        return f"https://gamebanana.com/{profile_url}"
+    
+    item_type = item_data.get('_sModelName', '').lower()
+    item_id = item_data.get('_idRow')
+    if item_type and item_id:
+        return f"https://gamebanana.com/{item_type}s/{item_id}"
+    return None
+
 def get_gb_item_name(item_type, item_id):
     """Fetches an item's name from the GameBanana API using its type and ID."""
     if not item_type or not item_id:
@@ -145,6 +157,27 @@ def get_gb_item_data_from_url(url):
     if not item_type or not item_id:
         raise ValueError("Could not extract a valid item type and ID from the URL.")
 
+    api_item_type = item_type.rstrip('s').capitalize()
+    api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles,_sDescription,_sText,_aPreviewMedia"
+    
+    try:
+        response = requests.get(api_url, headers={'User-Agent': f'CrossPatch/{APP_VERSION}'}, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        raise ConnectionError(f"Could not connect to GameBanana API: {e}")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Could not parse API response: {e}")
+
+def get_gb_item_data_by_id(item_type, item_id):
+    """
+    Fetches the full item data (including name and files) from the GameBanana API
+    using its type and ID directly.
+    """
+    if not item_type or not item_id:
+        raise ValueError("Invalid item type or ID provided.")
+
+    # API expects singular, capitalized type (e.g., "Mod", "Sound")
     api_item_type = item_type.rstrip('s').capitalize()
     api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles,_sDescription,_sText,_aPreviewMedia"
     
@@ -236,8 +269,9 @@ def get_gb_top_mods(game_id, page=1):
     try:
         response = requests.get(base_url, params=params, headers=headers, timeout=15)
         response.raise_for_status()
-        # This endpoint returns a simple list, so we create a dummy metadata object.
-        return response.json()
+        # This endpoint returns a simple list. We return it and a basic metadata object.
+        # The caller will know this endpoint doesn't support pagination.
+        return response.json(), {'_bIsComplete': True}
     except requests.RequestException as e:
         raise ConnectionError(f"Could not connect to GameBanana TopSubs API: {e}")
 
@@ -255,8 +289,9 @@ def get_gb_featured_mods(game_id, page=1):
         response = requests.get(base_url, params=params, headers=headers, timeout=15)
         response.raise_for_status()
         data = response.json()
-        # This endpoint returns a dictionary with _aRecords and _aMetadata
-        return data.get('_aRecords', [])
+        # This endpoint returns a dictionary with _aRecords and _aMetadata.
+        # We return both for the caller to handle pagination.
+        return data.get('_aRecords', []), data.get('_aMetadata', {})
     except requests.RequestException as e:
         raise ConnectionError(f"Could not connect to GameBanana Featured API: {e}")
 
@@ -290,13 +325,11 @@ def get_gb_spotlight_mods(game_id, page=1):
 def fetch_specialized_lists(game_id, sort, page):
     """Helper to call specialized list endpoints and normalize their output."""
     if sort == "Featured":
-        mods, metadata = get_gb_featured_mods(game_id, page), {} # Featured API doesn't give metadata
-        # Manually set is_complete to False to allow pagination, as this endpoint supports it.
-        metadata['_bIsComplete'] = False if mods else True
+        mods, metadata = get_gb_featured_mods(game_id, page)
     elif sort == "Community Spotlight":
         mods, metadata = get_gb_spotlight_mods(game_id, page), {'_bIsComplete': True} # No pagination
     else: # Default to "Top"
-        mods, metadata = get_gb_top_mods(game_id, page), {'_bIsComplete': True} # No pagination
+        mods, metadata = get_gb_top_mods(game_id, page)
     return mods, metadata
 
 
@@ -333,8 +366,9 @@ def check_for_updates_pyside(parent_window):
     remote_version = remote_info.get("tag_name")
     if remote_version and is_newer_version(APP_VERSION, remote_version):
         print(f"CrossPatch {APP_VERSION} is outdated, Latest Version is {remote_version}")
-        # The updater needs to be called from the main thread, but parent_window might not have .after
-        # The main window handles its own threading for this now.
+        # The parent window must have a signal to handle this from a non-GUI thread.
+        if hasattr(parent_window, 'update_check_finished'):
+            parent_window.update_check_finished.emit(remote_version, remote_info)
 
 def show_update_prompt_pyside(parent, remote_version, remote_info):
     from Updater import Updater # Local import to avoid circular dependency

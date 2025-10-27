@@ -4,6 +4,7 @@ import zipfile
 import time
 import threading
 import requests
+import json
 
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar, QMessageBox
 from PySide6.QtCore import Signal, QObject, Qt, QTimer
@@ -91,6 +92,10 @@ class DownloadManager:
         # preventing the UI from freezing before the window disappears.
         if self.on_complete:
             QTimer.singleShot(100, self.on_complete)
+        # Also refresh the browse tab if it exists on the parent, to reflect any changes.
+        if hasattr(self.parent, 'fetch_browse_mods'):
+            print("[DEBUG] Download finished. Triggering browse tab refresh.")
+            QTimer.singleShot(100, lambda: self.parent.fetch_browse_mods(page=self.parent.browse_current_page))
 
     def _on_error(self, error_message):
         if self.progress_dialog:
@@ -99,17 +104,17 @@ class DownloadManager:
         if self.on_complete: # Refresh UI even on failure
             self.on_complete()
 
-    def download_specific_file(self, file_info, item_name, extract_path_override=None):
-        dialog_title = f"Downloading {item_name}..."
+    def download_specific_file(self, file_info, full_item_data, extract_path_override=None):
+        dialog_title = f"Downloading {full_item_data.get('_sName', 'Mod')}..."
         dialog_file_name = file_info.get('_sFile', 'download.zip')
-        thread_args = (file_info, item_name, None, None, extract_path_override)
-        self._setup_and_start_thread(self._specific_download_thread, thread_args, dialog_title, dialog_file_name)
+        thread_args = (file_info, full_item_data, None, None, extract_path_override)
+        self._setup_and_start_thread(self._download_and_extract_thread, thread_args, dialog_title, dialog_file_name)
 
-    def update_specific_file(self, file_info, item_name, mod_folder_name, active_profile):
-        dialog_title = f"Updating {item_name}..."
+    def update_specific_file(self, file_info, full_item_data, mod_folder_name, active_profile):
+        dialog_title = f"Updating {full_item_data.get('_sName', 'Mod')}..."
         dialog_file_name = file_info.get('_sFile', 'download.zip')
-        thread_args = (file_info, item_name, mod_folder_name, active_profile)
-        self._setup_and_start_thread(self._specific_download_thread, thread_args, dialog_title, dialog_file_name)
+        thread_args = (file_info, full_item_data, mod_folder_name, active_profile)
+        self._setup_and_start_thread(self._download_and_extract_thread, thread_args, dialog_title, dialog_file_name)
 
     def download_from_schema(self, download_url, item_type, item_id, file_ext, page_url=None):
         # We don't know the name yet, so we'll pass a placeholder and update it in the thread
@@ -122,12 +127,13 @@ class DownloadManager:
         """DEPRECATED: This is now handled by _setup_and_start_thread."""
         pass
         
-    def _specific_download_thread(self, file_info, item_name, mod_folder_name=None, active_profile=None, extract_path_override=None):
+    def _download_and_extract_thread(self, file_info, full_item_data, mod_folder_name=None, active_profile=None, extract_path_override=None):
         temp_archive_path = None
         try:
             download_url = file_info.get('_sDownloadUrl')
             file_name = file_info.get('_sFile', 'download.zip')
-            clean_item_name = item_name.replace(" ", "")
+            item_name = full_item_data.get('_sName', 'Unknown Mod')
+            clean_item_name = item_name.replace(" ", "_")
 
             if not download_url:
                 raise ValueError("Could not find a download URL for the selected file.")
@@ -147,10 +153,10 @@ class DownloadManager:
                 shutil.rmtree(extract_path)
 
             Util.extract_archive(temp_archive_path, extract_path, self.signals.label_text)
-            self._update_mod_info_with_version(extract_path, file_info.get('_sVersion'))
-
-            if existing_mod_page:
-                self._update_mod_info_with_page(extract_path, existing_mod_page)
+            
+            # Update info.json with all available data
+            page_url = existing_mod_page or Util.get_gb_page_url_from_item_data(full_item_data)
+            self._create_and_update_mod_info(extract_path, full_item_data, file_info, page_url)
 
             os.remove(temp_archive_path)
             self.signals.finished.emit()
@@ -214,26 +220,22 @@ class DownloadManager:
                         self.signals.progress.emit(int(progress))
                         self.signals.progress_text.emit(f"{bytes_downloaded/1024/1024:.2f} MB / {total_size/1024/1024:.2f} MB")
 
-    def _update_mod_info_with_page(self, mod_path, page_url):
-        if not page_url or not os.path.isdir(mod_path): return
-        try:
-            info_path = os.path.join(mod_path, "info.json")
-            mod_info = Util.read_mod_info(mod_path)
-            mod_info['mod_page'] = page_url
-            with open(info_path, "w", encoding="utf-8") as f:
-                import json
-                json.dump(mod_info, f, indent=2)
-        except Exception as e:
-            print(f"Could not update info.json for {os.path.basename(mod_path)}: {e}")
-
-    def _update_mod_info_with_version(self, mod_path, version_str):
+    def _create_and_update_mod_info(self, mod_path, full_item_data, file_info, page_url):
+        """Creates or overwrites the info.json file with comprehensive data after download."""
         if not os.path.isdir(mod_path): return
         try:
             info_path = os.path.join(mod_path, "info.json")
-            mod_info = Util.read_mod_info(mod_path)
-            mod_info['version'] = version_str or mod_info.get('version') or "1.0"
+            
+            # Build the info dict from scratch using the rich data we have.
+            new_info = {
+                "name": full_item_data.get('_sName', os.path.basename(mod_path)),
+                "version": file_info.get('_sVersion') or full_item_data.get('_sVersion') or "1.0",
+                "author": full_item_data.get('_aSubmitter', {}).get('_sName', 'Unknown'),
+                "mod_page": page_url or "",
+                "mod_type": Util.read_mod_info(mod_path).get('mod_type', 'pak') # Preserve auto-detected type
+            }
+
             with open(info_path, "w", encoding="utf-8") as f:
-                import json
-                json.dump(mod_info, f, indent=2)
+                json.dump(new_info, f, indent=2)
         except Exception as e:
-            print(f"Could not update info.json for {os.path.basename(mod_path)} with version: {e}")
+            print(f"Could not update info.json for {os.path.basename(mod_path)}: {e}")

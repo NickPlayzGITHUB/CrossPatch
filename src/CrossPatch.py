@@ -226,6 +226,8 @@ class CrossPatchWindow(QMainWindow):
     protocol_url_received = Signal(str)
     # Signal to safely update UI after background mod update check
     mod_update_check_finished = Signal(dict, bool)
+    # Signal for app update check
+    update_check_finished = Signal(str, dict)
 
     def __init__(self, instance_socket=None):
         super().__init__()
@@ -264,37 +266,35 @@ class CrossPatchWindow(QMainWindow):
         main_layout.addWidget(self.notebook)
 
         self.mods_tab_frame = QWidget()
-        self.browse_tab_frame = QWidget()
-        self.settings_tab_frame = QWidget()
-
         self.notebook.addTab(self.mods_tab_frame, "Installed Mods")
-        self.notebook.addTab(self.browse_tab_frame, "Browse Mods")
-        self.notebook.addTab(self.settings_tab_frame, "Settings")
 
-        # --- Build UI for each tab ---
+        # Create and populate the primary mods tab first for faster perceived startup.
         self._create_mods_tab_ui()
+        self._update_treeview()
+
+        # --- Build UI for other tabs and bottom bar ---
+        self.browse_tab_frame = QWidget()
+        self.notebook.addTab(self.browse_tab_frame, "Browse Mods")
         self._create_browse_tab_ui()
+
+        self.settings_tab_frame = QWidget()
+        self.notebook.addTab(self.settings_tab_frame, "Settings")
         self._create_settings_tab_ui()
 
-        # --- Bottom Buttons and Status Bar ---
         self._create_bottom_bar()
 
         # --- Hotkeys ---
         search_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
-        # Only activate shortcut if the mods tab is visible
         search_shortcut.activated.connect(self.on_search_hotkey)
 
-        # Connect signals after all relevant widgets have been created
+        # --- Final Setup and Background Tasks ---
         self.notebook.currentChanged.connect(self.on_tab_change)
-
-        # --- Final Setup ---
         self.protocol_url_received.connect(self.handle_protocol_url)
         self.mod_update_check_finished.connect(self.on_mod_update_check_finished)
+        self.update_check_finished.connect(self.on_app_update_check_finished)
         if self.instance_socket:
             threading.Thread(target=self._socket_listener, daemon=True).start()
 
-        # On startup, just populate the list from saved data without a full refresh.
-        self._update_treeview()
         threading.Thread(target=lambda: self.check_all_mod_updates(), daemon=True).start()
         self.set_dark_title_bar()
 
@@ -348,30 +348,7 @@ class CrossPatchWindow(QMainWindow):
 
         # --- Filters and Search ---
         filter_bar = QHBoxLayout()
-        
-        filter_bar.addWidget(QLabel("Filter:"))
-        self.browse_filter_combo = QComboBox()
-        self.browse_filter_combo.addItems(["Top", "Featured", "Community Spotlight", "Newest", "Most Liked"])
-        # Use a lambda to ensure fetch_browse_mods is called with page=1 when the filter changes.
-        # The default signal would pass the combobox index (starting at 0) as the page number.
-        self.browse_filter_combo.currentIndexChanged.connect(lambda: self.fetch_browse_mods(page=1))
-        filter_bar.addWidget(self.browse_filter_combo)
-
-        filter_bar.addWidget(QLabel("Section:"))
-        self.browse_section_combo = QComboBox()
-        self.sections = {
-            "All Sections": None,
-            "Skins": 39130,
-            "HUD/GUI": 39825,
-            "Others/Misc": 39830,
-            "Animations": 40088,
-            "Items": 39839,
-            "Maps/Crossworlds": 39978,
-            "Translations": 39844
-        }
-        self.browse_section_combo.addItems(self.sections.keys())
-        self.browse_section_combo.currentIndexChanged.connect(lambda: self.fetch_browse_mods(page=1))
-        filter_bar.addWidget(self.browse_section_combo)
+        filter_bar.addWidget(QLabel("<b>Featured Mods</b>"))
 
         filter_bar.addStretch()
 
@@ -800,38 +777,55 @@ class CrossPatchWindow(QMainWindow):
             if not ok or not url:
                 return
         else:
+            # First, check if the item is a downloadable type. Some items like 'Requests' are not.
+            mod_type = item_data.get('_sModelName')
+            if mod_type == 'Request':
+                QMessageBox.information(self, "Cannot Download", "This item is a 'Request' and does not have any downloadable files.")
+                return
+
             # If item_data is from the browser, it might be incomplete.
             # We need to re-fetch it using the URL to guarantee we have the file list.
-            url = f"https://gamebanana.com/{item_data.get('_sProfileUrl')}"
+            # We have item_data from the ModCard, but it might not be the *full* data.
+            # We need to ensure we have _aFiles.
+            mod_id = item_data.get('_idRow')
 
-        if "gamebanana.com" not in url:
-            QMessageBox.warning(self, "Invalid URL", "Please enter a valid GameBanana mod URL.")
-            return
-        try:
-            # Always fetch the full data to ensure _aFiles is present.
-            item_data = Util.get_gb_item_data_from_url(url)
-        except Exception as e:
-            QMessageBox.critical(self, "Download Error", f"Could not get mod details.\n\n{e}")
-            return
+            if mod_type and mod_id:
+                try:
+                    # Directly fetch full item_data using the mod's type and ID
+                    item_data = Util.get_gb_item_data_by_id(mod_type, mod_id)
+                except Exception as e:
+                    QMessageBox.critical(self, "Download Error", f"Could not get mod details by ID.\n\n{e}")
+                    return
+            else:
+                QMessageBox.critical(self, "Download Error", "Mod data is incomplete: cannot identify mod for download.")
+                return
 
         try:
             mod_name = item_data.get('_sName', 'Unknown Mod')
-
             if not item_data.get('_aFiles'):
                 QMessageBox.critical(self, "No Files Found", "Could not find any downloadable files for this mod.")
                 return
-
-            dialog = FileSelectDialog(self, item_data)
-            if dialog.exec():
-                self.start_download_from_selection(dialog.get_selection(), mod_name)
+            
+            # Pause background image loading while the modal dialog is open to prevent crashes.
+            QThreadPool.globalInstance().clear() # Stop queued tasks
+            QThreadPool.globalInstance().waitForDone(100) # Wait up to 100ms for active tasks
+            
+            try:
+                dialog = FileSelectDialog(self, item_data)
+                if dialog.exec():
+                    self.start_download_from_selection(dialog.get_selection(), item_data)
+            finally:
+                # Resume background loading by re-fetching the mods, which will re-queue image loading.
+                print("[DEBUG] Resuming background tasks after closing file dialog.")
+                self.fetch_browse_mods(page=self.browse_current_page)
         except Exception as e:
-            QMessageBox.critical(self, "Download Error", f"Could not start download.\n\n{e}")
+            QMessageBox.critical(self, "Download Error", f"An error occurred.\n\n{e}")
 
-    def start_download_from_selection(self, selected_file, mod_name):
+    def start_download_from_selection(self, selected_file, full_item_data):
         """Starts the download after the FileSelectDialog has closed."""
         if selected_file:
             self.active_download_manager = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
-            self.active_download_manager.download_specific_file(selected_file, mod_name)
+            self.active_download_manager.download_specific_file(selected_file, full_item_data)
 
     def edit_selected_mod_info(self):
         selected = self.tree.currentItem()
@@ -892,7 +886,7 @@ class CrossPatchWindow(QMainWindow):
                 if selected_file:
                     self.active_download_manager = DownloadManager(self, self.cfg["mods_folder"], on_complete=self.refresh)
                     active_profile = self.profile_manager.get_active_profile()
-                    self.active_download_manager.update_specific_file(selected_file, mod_name_from_gb, mod_folder_name, active_profile)
+                    self.active_download_manager.update_specific_file(selected_file, item_data, mod_folder_name, active_profile)
             else:
                 threading.Thread(target=lambda: self.check_all_mod_updates(), daemon=True).start()
                 print("User cancelled file selection for update.")
@@ -944,6 +938,10 @@ class CrossPatchWindow(QMainWindow):
             else:
                 QMessageBox.information(self, "Update Check", "No mod updates available.")
         print("Mod update check finished and UI updated.")
+
+    def on_app_update_check_finished(self, remote_version, remote_info):
+        """Slot to handle the result of the background app update check."""
+        Util.show_update_prompt_pyside(self, remote_version, remote_info)
 
     def check_mod_updates(self):
         selected = self.tree.currentItem()
@@ -1186,25 +1184,18 @@ class CrossPatchWindow(QMainWindow):
         self.browse_page_label.setText(f"Page {self.browse_current_page}")
         self.browse_prev_btn.setEnabled(page > 1)
         
-        search_query = self.browse_search_entry.text()
-        
-        # Disable filters during search for better UX
-        is_searching = bool(search_query)
-        self.browse_filter_combo.setEnabled(not is_searching)
-        self.browse_section_combo.setEnabled(not is_searching)
+        search_query = self.browse_search_entry.text().strip()
+        sort_param = "Featured" # Hardcoded to always use Featured
 
-        sort_param = self.browse_filter_combo.currentText()
-        section_id = self.sections.get(self.browse_section_combo.currentText())
-
-        print(f"[DEBUG] Starting worker thread with sort='{sort_param}', page={self.browse_current_page}, search='{search_query}', section={section_id}")
+        print(f"[DEBUG] Starting worker thread with sort='{sort_param}', page={self.browse_current_page}, search='{search_query}'")
 
         threading.Thread(
             target=self._fetch_browse_mods_worker,
-            args=(sort_param, self.browse_current_page, search_query, section_id),
+            args=(sort_param, self.browse_current_page, search_query),
             daemon=True
         ).start()
 
-    def _fetch_browse_mods_worker(self, sort, page, search, section_id):
+    def _fetch_browse_mods_worker(self, sort, page, search):
         try:
             # Game ID for "Sonic Racing Crossworlds"
             game_id = 21640
@@ -1212,13 +1203,7 @@ class CrossPatchWindow(QMainWindow):
 
             # Search overrides all other filters and uses the Subfeed endpoint.
             if search:
-                mods, metadata = Util.get_gb_mod_list(game_id, 'default', page, search, section_id)
-            # If a section is selected, we must use the Subfeed endpoint as it supports category filtering.
-            elif section_id:
-                sort_map = { "Top": "default", "Newest": "new", "Most Liked": "popular", "Featured": "featured", "Community Spotlight": "spotlight" }
-                subfeed_sort = sort_map.get(sort, "default")
-                mods, metadata = Util.get_gb_mod_list(game_id, subfeed_sort, page, None, section_id)
-            # Use specialized, more curated endpoints only when no section is selected.
+                mods, metadata = Util.get_gb_mod_list(game_id, 'default', page, search, None)
             else:
                 mods, metadata = Util.fetch_specialized_lists(game_id, sort, page)
 
@@ -1226,7 +1211,7 @@ class CrossPatchWindow(QMainWindow):
         except Exception as e:
             error_message = f"Failed to fetch mods: {e}"
             print(error_message)
-            QApplication.instance().postEvent(self, Util.ModListFetchEvent([error_message]))
+            QApplication.instance().postEvent(self, Util.ModListFetchEvent(([error_message], {})))
 
     def _clear_card_layout(self):
         """Removes all widgets from the card layout, ensuring threads are stopped."""

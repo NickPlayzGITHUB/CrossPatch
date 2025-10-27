@@ -8,5 +8,5 @@ def hook(hook_api):
     This ensures that if PySide6 is being used by the main app, we explicitly exclude PyQt5.
     """
     if is_module_satisfies("PySide6"):
-        hook_api.add_excludes(["PyQt5"])
+        hook_api.add_excludes(["PyQt5", "PyQt6", "PySide2"])
     hook_api.add_datas(collect_submodules("qdarktheme", include_py_files=True))
