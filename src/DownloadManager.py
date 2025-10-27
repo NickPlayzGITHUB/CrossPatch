@@ -232,10 +232,38 @@ class DownloadManager:
                 "version": file_info.get('_sVersion') or full_item_data.get('_sVersion') or "1.0",
                 "author": full_item_data.get('_aSubmitter', {}).get('_sName', 'Unknown'),
                 "mod_page": page_url or "",
-                "mod_type": Util.read_mod_info(mod_path).get('mod_type', 'pak') # Preserve auto-detected type
+                "mod_type": Util.read_mod_info(mod_path).get('mod_type', 'pak'), # Preserve auto-detected type
+                "replaced_files": Util.generate_mod_file_list(mod_path) # Generate file manifest
             }
 
             with open(info_path, "w", encoding="utf-8") as f:
                 json.dump(new_info, f, indent=2)
+            print(f"Generated info.json with {len(new_info['replaced_files'])} files for {new_info['name']}.")
         except Exception as e:
             print(f"Could not update info.json for {os.path.basename(mod_path)}: {e}")
+
+    def _update_mod_info_with_version(self, mod_path, version):
+        """Updates the version in a mod's info.json file."""
+        if not os.path.isdir(mod_path) or not version:
+            return
+        try:
+            info_path = os.path.join(mod_path, "info.json")
+            mod_info = Util.read_mod_info(mod_path)  # Handles non-existent files
+            mod_info['version'] = version
+            with open(info_path, "w", encoding="utf-8") as f:
+                json.dump(mod_info, f, indent=2)
+        except Exception as e:
+            print(f"Could not update version for {os.path.basename(mod_path)}: {e}")
+
+    def _update_mod_info_with_page(self, mod_path, page_url):
+        """Updates the mod_page in a mod's info.json file."""
+        if not os.path.isdir(mod_path) or not page_url:
+            return
+        try:
+            info_path = os.path.join(mod_path, "info.json")
+            mod_info = Util.read_mod_info(mod_path)  # Handles non-existent files
+            mod_info['mod_page'] = page_url
+            with open(info_path, "w", encoding="utf-8") as f:
+                json.dump(mod_info, f, indent=2)
+        except Exception as e:
+            print(f"Could not update mod page for {os.path.basename(mod_path)}: {e}")
