@@ -10,6 +10,7 @@ class EditModWindow(QDialog):
 
         self.setWindowTitle(f"Edit {display_name} info.json")
         self.setModal(True)
+        self.setFixedSize(400, 250)  
 
         self.original_mod_type = data.get("mod_type", "pak")
         self.new_data = None

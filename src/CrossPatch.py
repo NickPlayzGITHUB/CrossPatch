@@ -253,7 +253,7 @@ class CrossPatchWindow(QMainWindow):
         if geometry:
             self.restoreGeometry(bytes.fromhex(geometry))
         else:
-            self.resize(620, 750)
+            self.resize(850, 770)
             Util.center_window_pyside(self)
 
         # --- Main Widget and Layout ---
