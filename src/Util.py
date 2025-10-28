@@ -10,11 +10,56 @@ import platform
 import re
 import sys
 import threading
-from PySide6.QtCore import QEvent
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtCore import QEvent, QTimer
+from PySide6.QtWidgets import QApplication, QMessageBox, QDialog, QLabel, QVBoxLayout, QProgressBar
 
 from Constants import UPDATE_URL, APP_VERSION, STEAM_APP_ID
 from Config import CONFIG_DIR
+import PakInspector
+
+# File storing user-suppressed conflict reminders. Keys are tuples stored as
+# { "mod": <mod_folder>, "provider": <provider_mod_folder> }
+IGNORED_CONFLICTS_PATH = os.path.join(CONFIG_DIR, "ignored_conflicts.json")
+
+# In-memory cache for read_mod_info to avoid repeated disk reads during refreshes
+# Maps info_file_path -> (mtime, data)
+_READ_MOD_INFO_CACHE = {}
+_BACKGROUND_PARSES = {}
+
+
+def load_ignored_conflicts():
+    try:
+        if os.path.exists(IGNORED_CONFLICTS_PATH):
+            with open(IGNORED_CONFLICTS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def save_ignored_conflicts(data):
+    try:
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(IGNORED_CONFLICTS_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
+def is_conflict_ignored(mod, provider):
+    data = load_ignored_conflicts()
+    for entry in data:
+        if entry.get("mod") == mod and entry.get("provider") == provider:
+            return True
+    return False
+
+
+def add_ignored_conflict(mod, provider):
+    data = load_ignored_conflicts()
+    entry = {"mod": mod, "provider": provider}
+    if entry not in data:
+        data.append(entry)
+        save_ignored_conflicts(data)
 
 class ModListFetchEvent(QEvent):
     """Custom event for when the mod list has been fetched."""
@@ -415,10 +460,19 @@ def read_mod_info(mod_path):
     info_file = os.path.join(mod_path, "info.json")
     if os.path.exists(info_file):
         try:
+            mtime = os.path.getmtime(info_file)
+            cached = _READ_MOD_INFO_CACHE.get(info_file)
+            if cached and cached[0] == mtime:
+                return cached[1]
+
             with open(info_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            _READ_MOD_INFO_CACHE[info_file] = (mtime, data)
+            return data
         except Exception:
             # If info.json is corrupt, treat it as if it doesn't exist
+            # and remove any stale cache entry
+            _READ_MOD_INFO_CACHE.pop(info_file, None)
             pass
 
     # info.json does not exist or is corrupt. Auto-detect type and return a default dict.
@@ -628,8 +682,8 @@ def launch_game():
 
 
 def _ensure_ue4ss_installed(cfg, root_window):
-    from src.DownloadManager import DownloadManager # Local import to break circular dependency
-
+    # Local import to break circular dependency. Use direct import as the script is run from within src.
+    from DownloadManager import DownloadManager
     """Checks if UE4SS is installed and installs it if not."""
     win64_path = os.path.join(cfg["game_root"], "UNION", "Binaries", "Win64")
     ue4ss_folder = os.path.join(win64_path, "ue4ss")
@@ -660,30 +714,173 @@ def _ensure_ue4ss_installed(cfg, root_window):
     os.makedirs(temp_download_dir, exist_ok=True)
     
     try:
-        # This needs to be a synchronous operation for this specific case.
-        # We'll create a dummy on_complete event to wait for.
-        completion_event = threading.Event()
-        dm = DownloadManager(root_window, temp_download_dir, on_complete=completion_event.set)
-        # The download_mod_from_url method doesn't exist in the PySide version,
-        # let's use the more generic download_specific_file after getting item data.
+        # This operation is now asynchronous. The DownloadManager will show progress
+        # and the on_complete callback (root_window.refresh) will handle the rest.
+        dm = DownloadManager(root_window, temp_download_dir, on_complete=root_window.refresh)
         item_data = get_gb_item_data_from_url(ue4ss_url)
         file_to_download = max(item_data.get('_aFiles', []), key=lambda f: f.get('_nFilesize', 0))
-        dm.download_specific_file(file_to_download, item_data.get('_sName', 'UE4SS'), extract_path_override=win64_path)
-        completion_event.wait() # Block until download/extract is finished
-        print("UE4SS installation completed.")
-        shutil.rmtree(temp_download_dir, ignore_errors=True)
+        dm.download_specific_file(file_to_download, item_data, extract_path_override=win64_path)
+        # The function will now return immediately. The UI will be updated when the download completes.
         return True
     except Exception as e:
         QMessageBox.critical(root_window, "UE4SS Installation Failed", f"Failed to download or install UE4SS. The mod will not be enabled.\n\nError: {e}")
         shutil.rmtree(temp_download_dir, ignore_errors=True)
         return False
 
+def get_active_pak_files(mod_path, mod_info, profile_data):
+    """Get the list of pak files that would be active based on the mod's configuration."""
+    active_paks = set()
+    config = mod_info.get("configuration", {})
+    if not config:
+        # No configuration - all paks are active
+        return None
+        
+    mod_name = os.path.basename(mod_path)
+    mod_configs = profile_data.get("mod_configurations", {}).get(mod_name, {})
+    
+    for category, options in config.items():
+        selected_option = mod_configs.get(category, next(iter(options.keys()), None))
+        if selected_option:
+            option_path = os.path.join(mod_path, category, selected_option)
+            if os.path.isdir(option_path):
+                for f in os.listdir(option_path):
+                    if f.endswith('.pak') or f.endswith('.utoc'):
+                        active_paks.add(os.path.join(category, selected_option, f))
+                        
+    return active_paks
+
+
+def check_mod_conflicts(mod_name, mod_info, cfg, profile_data, active_paks=None):
+    """
+    Check for file conflicts between a mod being enabled and other enabled mods.
+
+    This compares the pak metadata (game file paths) from the mod being enabled
+    against all other enabled mods in the active profile. It respects per-mod
+    configurations by optionally filtering to only the active pak files.
+
+    Returns a dict mapping game file paths to a list of strings describing which
+    mods/pak provide that file.
+    """
+    conflicts = {}
+    mods_folder = cfg["mods_folder"]
+    enabled_mods = [m for m in profile_data.get("mod_priority", [])
+                   if profile_data.get("enabled_mods", {}).get(m, False)]
+
+    # If this mod has no pak metadata, nothing to compare
+    if not mod_info.get("pak_data"):
+        return conflicts
+
+    # Build a set/map of files provided by this mod (respecting active_paks if given)
+    this_mod_files = {}
+    for pak in mod_info.get("pak_data", {}).get("pak_files", []):
+        pak_path = pak.get("file_path", "")
+        pak_name = pak.get("file_name") or os.path.basename(pak_path)
+        if active_paks is not None:
+            # active_paks contains relative paths used by get_active_pak_files
+            if not any(pak_path.endswith(p) for p in active_paks):
+                continue
+        for file_path in pak.get("files", []):
+            this_mod_files[file_path] = pak_name
+
+    # Compare against other enabled mods
+    for other in enabled_mods:
+        if other == mod_name:
+            continue
+        other_path = os.path.join(mods_folder, other)
+        other_info = read_mod_info(other_path)
+        if not other_info.get("pak_data"):
+            continue
+
+        other_active = get_active_pak_files(other_path, other_info, profile_data)
+        for pak in other_info.get("pak_data", {}).get("pak_files", []):
+            other_pak_path = pak.get("file_path", "")
+            other_pak_name = pak.get("file_name") or os.path.basename(other_pak_path)
+            if other_active is not None and not any(other_pak_path.endswith(p) for p in other_active):
+                continue
+
+            for fp in pak.get("files", []):
+                if fp in this_mod_files:
+                    # If the user previously chose to ignore conflicts between these two mods,
+                    # skip reporting this pair.
+                    if is_conflict_ignored(mod_name, other):
+                        continue
+
+                    # Record structured provider info: (provider_mod, pak_name)
+                    conflicts.setdefault(fp, [])
+                    provider_tuple = (other, other_pak_name)
+                    this_tuple = (mod_name, this_mod_files[fp])
+                    if provider_tuple not in conflicts[fp]:
+                        conflicts[fp].append(provider_tuple)
+                    if this_tuple not in conflicts[fp]:
+                        conflicts[fp].append(this_tuple)
+
+    return conflicts
+
 def enable_mod(mod_name, cfg, priority, profile_data):
-    mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
+    mod_path = os.path.join(cfg["mods_folder"], mod_name)
+    mod_info = read_mod_info(mod_path)
     mod_type = mod_info.get("mod_type", "pak") # Default to 'pak' if not specified
 
-    src = os.path.join(cfg["mods_folder"], mod_name)
+    # If this is a pak mod, analyze its contents and update info.json
+    if mod_type == "pak" and not mod_info.get("pak_data"):
+        try:
+            pak_data = PakInspector.generate_mod_pak_manifest(mod_path)
+            if pak_data:
+                mod_info["pak_data"] = pak_data
+                with open(os.path.join(mod_path, "info.json"), "w", encoding="utf-8") as f:
+                    json.dump(mod_info, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not analyze pak files for {mod_name}: {e}")
 
+    # Check for conflicts with other enabled mods
+    active_paks = get_active_pak_files(mod_path, mod_info, profile_data)
+    conflicts = check_mod_conflicts(mod_name, mod_info, cfg, profile_data, active_paks)
+    if conflicts:
+        # Build a concise list of provider pak files involved in the conflicts.
+        # We will present a compact dialog allowing the user to suppress reminders
+        # for specific provider mods.
+        providers_map = {}  # provider_mod -> set of pak names
+        for fp, provs in conflicts.items():
+            for prov_mod, prov_pak in provs:
+                # provs contains tuples (provider_mod, pak_name) and (this_mod, pak_name)
+                if prov_mod == mod_name:
+                    # skip the current mod as a provider in the list
+                    continue
+                providers_map.setdefault(prov_mod, set()).add(prov_pak)
+
+        # Prepare a compact UI dialog listing provider mods and their pak files.
+        from ConflictDialog import ConflictDialog
+        dialog = ConflictDialog(None, mod_name, conflicts)
+        if dialog.exec():
+            action = dialog.get_action()
+            selected = dialog.get_selected_providers()
+            # Handle actions: "ignore" (add to ignore list),
+            # "disable_providers" (disable selected provider mods),
+            # "rollback" (disable the newly enabled mod)
+            if action == "ignore":
+                for provider_mod in selected:
+                    add_ignored_conflict(mod_name, provider_mod)
+            elif action == "disable_providers":
+                for provider_mod in selected:
+                    try:
+                        profile_data["enabled_mods"][provider_mod] = False
+                    except Exception:
+                        pass
+                    try:
+                        remove_mod_from_game_folders(provider_mod, cfg)
+                    except Exception:
+                        pass
+            elif action == "rollback":
+                try:
+                    profile_data["enabled_mods"][mod_name] = False
+                except Exception:
+                    pass
+                try:
+                    remove_mod_from_game_folders(mod_name, cfg)
+                except Exception:
+                    pass
+
+    src = mod_path
     if mod_type == "ue4ss-script":
         dst = os.path.join(cfg["ue4ss_mods_folder"], mod_name)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -750,8 +947,154 @@ def enable_mod_with_ui_pyside(mod_name, cfg, priority, root_window, profile_data
             profile_data["enabled_mods"][mod_name] = False # Ensure it's marked as disabled
             return
 
+    # For pak mods, if we don't have pak_data yet, start a non-blocking background
+    # parse that will persist pak_data and run conflict detection when complete.
+    if mod_type == "pak" and not mod_info.get("pak_data"):
+        mod_path = os.path.join(cfg["mods_folder"], mod_name)
+        try:
+            start_background_parse(root_window, mod_path, mod_name, cfg, profile_data)
+        except Exception as e:
+            print(f"Warning: Could not start background parse for {mod_name}: {e}")
+
     print(f"Enabling {mod_name} (type: {mod_type}) with priority {priority}")
     enable_mod(mod_name, cfg, priority, profile_data)
+
+
+def _parse_pak_with_progress(parent, mod_path, mod_name):
+    """Run PakInspector.generate_mod_pak_manifest in a background thread while
+    showing a modal progress dialog. Returns the pak_data dict or None.
+    """
+    result = {"pak": None, "error": None, "done": False}
+
+    def worker():
+        try:
+            pak = PakInspector.generate_mod_pak_manifest(mod_path)
+            result["pak"] = pak
+        except Exception as e:
+            result["error"] = str(e)
+        finally:
+            result["done"] = True
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    dialog = QDialog(parent)
+    dialog.setWindowTitle("Analyzing Pak Files")
+    layout = QVBoxLayout(dialog)
+    label = QLabel(f"Analyzing pak files for '{mod_name}'...")
+    layout.addWidget(label)
+    progress = QProgressBar()
+    progress.setRange(0, 0)  # busy indicator
+    layout.addWidget(progress)
+
+    # Poll for completion using QTimer
+    timer = QTimer(dialog)
+    def check_done():
+        if result["done"]:
+            timer.stop()
+            dialog.accept()
+    timer.timeout.connect(check_done)
+    timer.start(200)
+
+    dialog.exec()
+
+    if result["error"]:
+        raise RuntimeError(result["error"])
+    return result["pak"]
+
+
+def start_background_parse(parent, mod_path, mod_name, cfg, profile_data):
+    """Start a background parse for a mod's pak files and run conflict checks
+    when finished. This is non-blocking from the caller's perspective.
+    """
+    # Avoid starting the same parse multiple times
+    if _BACKGROUND_PARSES.get(mod_path):
+        return
+    _BACKGROUND_PARSES[mod_path] = True
+
+    def worker():
+        try:
+            pak = PakInspector.generate_mod_pak_manifest(mod_path)
+
+            # Persist pak_data into info.json
+            info_path = os.path.join(mod_path, "info.json")
+            try:
+                if os.path.exists(info_path):
+                    with open(info_path, "r", encoding="utf-8") as f:
+                        info = json.load(f)
+                else:
+                    info = {}
+                info["pak_data"] = pak
+                with open(info_path, "w", encoding="utf-8") as f:
+                    json.dump(info, f, indent=2)
+                # Update cache
+                try:
+                    mtime = os.path.getmtime(info_path)
+                    _READ_MOD_INFO_CACHE[info_path] = (mtime, info)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # Schedule UI work on main thread
+            def ui_done():
+                _BACKGROUND_PARSES.pop(mod_path, None)
+                try:
+                    if parent and hasattr(parent, 'refresh'):
+                        parent.refresh()
+                except Exception:
+                    pass
+
+                # Run conflict detection now that pak_data is available
+                try:
+                    mod_info = read_mod_info(mod_path)
+                    active_paks = get_active_pak_files(mod_path, mod_info, profile_data)
+                    conflicts = check_mod_conflicts(mod_name, mod_info, cfg, profile_data, active_paks)
+                    if conflicts:
+                        from ConflictDialog import ConflictDialog
+                        dialog = ConflictDialog(parent, mod_name, conflicts)
+                        if dialog.exec():
+                            action = dialog.get_action()
+                            selected = dialog.get_selected_providers()
+                            if action == "ignore":
+                                for provider_mod in selected:
+                                    add_ignored_conflict(mod_name, provider_mod)
+                            elif action == "disable_providers":
+                                for provider_mod in selected:
+                                    try:
+                                        profile_data["enabled_mods"][provider_mod] = False
+                                    except Exception:
+                                        pass
+                                    try:
+                                        remove_mod_from_game_folders(provider_mod, cfg)
+                                    except Exception:
+                                        pass
+                            elif action == "rollback":
+                                try:
+                                    profile_data["enabled_mods"][mod_name] = False
+                                except Exception:
+                                    pass
+                                try:
+                                    remove_mod_from_game_folders(mod_name, cfg)
+                                except Exception:
+                                    pass
+                except Exception as e:
+                    try:
+                        QMessageBox.warning(parent, "Pak Parser Error", f"Error during post-parse conflict check: {e}")
+                    except Exception:
+                        pass
+
+            QTimer.singleShot(0, ui_done)
+        except Exception as e:
+            _BACKGROUND_PARSES.pop(mod_path, None)
+            def ui_err():
+                try:
+                    QMessageBox.warning(parent, "Pak Parser Error", f"Background pak parsing failed for {mod_name}: {e}")
+                except Exception:
+                    pass
+            QTimer.singleShot(0, ui_err)
+
+    threading.Thread(target=worker, daemon=True).start()
 
 def enable_mods_from_priority(priority_list, enabled_mods_dict, cfg, root_window, profile_data):
     """
@@ -771,7 +1114,7 @@ def enable_mods_from_priority(priority_list, enabled_mods_dict, cfg, root_window
             if mod_type == "pak":
                 enabled_pak_mod_count += 1
 
-def extract_archive(archive_path, dest_path, progress_signal=None):
+def extract_archive(archive_path, dest_path, progress_signal=None, clean_destination=True, finished_signal=None):
     """
     Extracts an archive to a destination path and handles nested folders.
 
@@ -779,12 +1122,15 @@ def extract_archive(archive_path, dest_path, progress_signal=None):
         archive_path (str): The path to the archive file.
         dest_path (str): The destination directory for extraction.
         progress_signal (Signal, optional): A PySide6 signal to emit progress updates.
+        clean_destination (bool): If True, the destination directory will be removed before extraction.
+        finished_signal (Signal, optional): A PySide6 signal to emit when extraction is complete.
     """
     print(f"Starting extraction of '{os.path.basename(archive_path)}' to '{dest_path}'")
-    # Ensure the destination directory exists and is empty for a clean extraction
-    if os.path.isdir(dest_path):
-        print(f"Destination '{dest_path}' exists. Removing for clean extraction.")
-        shutil.rmtree(dest_path)
+    
+    if clean_destination:
+        if os.path.isdir(dest_path):
+            print(f"Destination '{dest_path}' exists. Removing for clean extraction.")
+            shutil.rmtree(dest_path)
     os.makedirs(dest_path, exist_ok=True)
 
     archive_format = os.path.splitext(archive_path)[1].lower()
@@ -831,3 +1177,6 @@ def extract_archive(archive_path, dest_path, progress_signal=None):
             shutil.move(os.path.join(nested_folder_path, item_name), dest_path)
         os.rmdir(nested_folder_path)
         print(f"Corrected nested folder structure for '{os.path.basename(dest_path)}'.")
+    
+    if finished_signal:
+        finished_signal.emit()

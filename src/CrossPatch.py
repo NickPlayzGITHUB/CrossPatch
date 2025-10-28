@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTreeWidget, QTreeWidgetItem, QHeaderView, QPushButton, QLineEdit, QLabel, QStyle,
     QFrame, QComboBox, QCheckBox, QMenu, QSplitter, QSpacerItem, QSizePolicy, QScrollArea,
-    QGridLayout,
+    QDialog, QTableWidget, QTableWidgetItem, QGridLayout,
     QMessageBox, QFileDialog, QInputDialog
 )
 from PySide6.QtGui import QIcon, QAction, QFont, QDrag, QPixmap, QPainter, QColor, QDesktopServices, QImage, QDropEvent, QShortcut, QKeySequence, QMouseEvent
@@ -30,6 +30,7 @@ from ProfileManager import ProfileManager
 import Config
 import Util
 from Constants import APP_TITLE, APP_VERSION
+import PakInspector
 
 class WorkerSignals(QObject):
     """Defines signals available from a running worker thread."""
@@ -498,6 +499,12 @@ class CrossPatchWindow(QMainWindow):
         if platform.system() == "Windows":
             other_layout.addWidget(self.show_logs_var)
 
+        # Ignored conflicts management
+        ignored_btn = QPushButton("Ignored Conflicts...")
+        ignored_btn.setToolTip("View and clear ignored conflict pairs")
+        ignored_btn.clicked.connect(self.open_ignored_conflicts)
+        other_layout.addWidget(ignored_btn)
+
         settings_layout.addWidget(other_frame)
 
         # --- Action Buttons ---
@@ -510,6 +517,16 @@ class CrossPatchWindow(QMainWindow):
         action_layout.addWidget(credits_btn)
         action_layout.addStretch()
         settings_layout.addWidget(action_frame)
+
+    def open_ignored_conflicts(self):
+        try:
+            # Local import to avoid circular imports during module load
+            from IgnoredConflictsDialog import IgnoredConflictsDialog
+            dialog = IgnoredConflictsDialog(self)
+            dialog.exec()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not open ignored conflicts dialog: {e}")
+        
 
     def _create_bottom_bar(self):
         # --- Main Action Buttons (Refresh, Save, Add) ---
@@ -646,9 +663,7 @@ class CrossPatchWindow(QMainWindow):
             mod_folder_name = item.data(0, Qt.UserRole)
             is_enabled = item.checkState(1) == Qt.Checked
             self.profile_manager.set_mod_enabled(mod_folder_name, is_enabled)
-
-            # A manual check/uncheck should re-sort the list.
-            self._update_treeview()
+            # Do not re-sort the list when checking/unchecking - this will happen on save instead
 
     def on_right_click(self, pos):
         """Handles right-clicks on the treeview to show the context menu."""
@@ -676,9 +691,83 @@ class CrossPatchWindow(QMainWindow):
             menu.addAction("Check for updates", self.check_mod_updates)
 
         menu.addSeparator()
+        menu.addAction("View pak contents...", lambda: self.show_pak_contents(mod_folder_name))
+        menu.addSeparator()
         menu.addAction(self.style().standardIcon(QStyle.SP_TrashIcon), "Delete mod", self.delete_mod)
 
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def show_pak_contents(self, mod_folder_name):
+        """Shows a dialog with pak contents and metadata for the selected mod."""
+        mod_path = os.path.join(self.cfg["mods_folder"], mod_folder_name)
+        mod_info = Util.read_mod_info(mod_path) or {}
+
+        pak_data = mod_info.get("pak_data")
+        if not pak_data:
+            try:
+                pak_data = PakInspector.generate_mod_pak_manifest(mod_path)
+                # persist to info.json if possible
+                try:
+                    info_path = os.path.join(mod_path, "info.json")
+                    if os.path.exists(info_path):
+                        mod_info["pak_data"] = pak_data
+                        with open(info_path, "w", encoding="utf-8") as f:
+                            json.dump(mod_info, f, indent=2)
+                except Exception as e:
+                    print(f"Warning: Could not write pak_data to info.json: {e}")
+            except Exception as e:
+                QMessageBox.warning(self, "Pak Inspector", f"Could not analyze pak files: {e}")
+                return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Pak Contents - {mod_info.get('name', mod_folder_name)}")
+        layout = QVBoxLayout(dialog)
+
+        summary = QLabel(f"Files: {pak_data.get('total_files', 0)}  Total size: {pak_data.get('total_size', 0)} bytes")
+        layout.addWidget(summary)
+
+        table = QTableWidget()
+        headers = ["Path", "Size", "Compressed", "Offset", "Archive", "Source"]
+        table.setColumnCount(len(headers))
+        table.setHorizontalHeaderLabels(headers)
+
+        rows = []
+        # Prefer detailed index if available
+        if pak_data.get('files_index'):
+            for e in pak_data['files_index']:
+                rows.append([
+                    e.get('path', ''),
+                    str(e.get('size', '')),
+                    str(e.get('compressed_size', '')),
+                    str(e.get('offset', '')),
+                    e.get('archive', ''),
+                    ''
+                ])
+        else:
+            # Fallback to listing per pak file entries
+            for pak in pak_data.get('pak_files', []):
+                source = pak.get('file_name') or pak.get('file_path')
+                for f in pak.get('files', []):
+                    rows.append([f, '', '', '', '', source])
+
+        table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, val in enumerate(row):
+                item = QTreeWidgetItem([str(val)]) if c == 0 else None
+                if c == 0:
+                    table.setItem(r, c, QTableWidgetItem(str(val)))
+                else:
+                    table.setItem(r, c, QTableWidgetItem(str(val)))
+
+        table.resizeColumnsToContents()
+        layout.addWidget(table)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+
+        dialog.resize(800, 600)
+        dialog.exec()
 
     # --- Core Application Logic (Ported from Tkinter version) ---
 
@@ -758,14 +847,20 @@ class CrossPatchWindow(QMainWindow):
                 else:
                     disabled_mods_with_info.append((name, mod_folder_name))
 
-            # Sort disabled mods alphabetically by name
-            disabled_mods_with_info.sort(key=lambda x: x[0].lower())
+            # Only sort disabled mods alphabetically if this is a save operation
+            if not preserve_selection:  # preserve_selection is False during save operations
+                disabled_mods_with_info.sort(key=lambda x: x[0].lower())
             
             # The final list of mod folders to display
             display_order = enabled_mods_ordered + [mod_folder for name, mod_folder in disabled_mods_with_info]
             
             # --- Tree Update ---
             self.tree.setColumnHidden(0, not self.updatable_mods)
+            # Disable widget updates to reduce repaint overhead during bulk population
+            try:
+                self.tree.setUpdatesEnabled(False)
+            except Exception:
+                pass
             self.tree.clear()
 
             for mod_folder_name in display_order:
@@ -775,7 +870,10 @@ class CrossPatchWindow(QMainWindow):
                 author = info.get("author", "Unknown")
                 mod_type = info.get("mod_type", "pak").upper()
                 # Check for file-based config OR json-based config
-                has_config = bool(Util.discover_mod_configuration(os.path.join(self.cfg["mods_folder"], mod_folder_name))) or "configuration" in info
+                # Avoid expensive filesystem scans during browse rendering: only use
+                # saved 'configuration' from info.json. Full discovery is performed
+                # when the user opens the Configure dialog.
+                has_config = "configuration" in info
                 is_enabled = enabled_mods_map.get(mod_folder_name, False)
 
                 item = QTreeWidgetItem(["", "", name, version, author, mod_type, ""])
@@ -799,10 +897,16 @@ class CrossPatchWindow(QMainWindow):
                     self.tree.setCurrentItem(item)
 
             print("Treeview updated")
+            try:
+                self.tree.setUpdatesEnabled(True)
+            except Exception:
+                pass
         finally:
             self.tree.blockSignals(False)
 
     def save_and_refresh(self):
+        # Update treeview with sorting (preserve_selection=False to trigger sorting)
+        self._update_treeview(preserve_selection=False)
         self.refresh()
 
     def save_and_launch(self):
@@ -992,15 +1096,26 @@ class CrossPatchWindow(QMainWindow):
 
     def on_mod_update_check_finished(self, updates, manual_check):
         """Slot to handle the results of the background mod update check."""
-        self.updatable_mods = updates
-        self._update_treeview(preserve_selection=True)
+        # Only update the UI if the set of updates actually changed. This avoids
+        # an unnecessary second Treeview refresh during startup when nothing
+        # meaningful changed since the initial rendering.
+        if updates != self.updatable_mods:
+            self.updatable_mods = updates
+            self._update_treeview(preserve_selection=True)
+        else:
+            # If this was a manual check, still notify the user even if nothing changed.
+            if manual_check:
+                if updates:
+                    QMessageBox.information(self, "Updates Found", f"{len(updates)} mod(s) have updates available and are now highlighted.")
+                else:
+                    QMessageBox.information(self, "Update Check", "No mod updates available.")
 
-        if manual_check:
-            if updates:
-                QMessageBox.information(self, "Updates Found", f"{len(updates)} mod(s) have updates available and are now highlighted.")
-            else:
-                QMessageBox.information(self, "Update Check", "No mod updates available.")
-        print("Mod update check finished and UI updated.")
+        # If it was a manual check and there were updates, we may still need to
+        # inform the user even if the internal mapping hasn't changed (edge cases).
+        if manual_check and updates and updates != self.updatable_mods:
+            QMessageBox.information(self, "Updates Found", f"{len(updates)} mod(s) have updates available and are now highlighted.")
+
+        print("Mod update check finished.")
 
     def on_app_update_check_finished(self, remote_version, remote_info):
         """Slot to handle the result of the background app update check."""

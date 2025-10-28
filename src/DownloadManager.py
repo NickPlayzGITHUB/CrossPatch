@@ -11,6 +11,7 @@ from PySide6.QtCore import Signal, QObject, Qt, QTimer
 
 import Util
 from Constants import APP_VERSION
+import PakInspector
 
 # --- Handle optional archive dependencies ---
 try:
@@ -86,11 +87,11 @@ class DownloadManager:
         threading.Thread(target=thread_target, args=thread_args, daemon=True).start()
 
     def _on_finish(self):
-        if self.progress_dialog:
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
             self.progress_dialog.accept()
         # Schedule the on_complete callback to run after the dialog has had a chance to close,
         # preventing the UI from freezing before the window disappears.
-        if self.on_complete:
+        if hasattr(self, 'on_complete') and self.on_complete:
             QTimer.singleShot(100, self.on_complete)
         # Also refresh the browse tab if it exists on the parent, to reflect any changes.
         if hasattr(self.parent, 'fetch_browse_mods'):
@@ -98,11 +99,11 @@ class DownloadManager:
             QTimer.singleShot(100, lambda: self.parent.fetch_browse_mods(page=self.parent.browse_current_page))
 
     def _on_error(self, error_message):
-        if self.progress_dialog:
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
             self.progress_dialog.reject()
         QMessageBox.critical(self.parent, "Download Failed", error_message)
-        if self.on_complete: # Refresh UI even on failure
-            self.on_complete()
+        if hasattr(self, 'on_complete') and self.on_complete: # Refresh UI even on failure
+            QTimer.singleShot(100, self.on_complete)
 
     def download_specific_file(self, file_info, full_item_data, extract_path_override=None):
         dialog_title = f"Downloading {full_item_data.get('_sName', 'Mod')}..."
@@ -152,14 +153,16 @@ class DownloadManager:
             if mod_folder_name and os.path.isdir(extract_path):
                 shutil.rmtree(extract_path)
 
-            Util.extract_archive(temp_archive_path, extract_path, self.signals.label_text)
+            Util.extract_archive(temp_archive_path, extract_path, self.signals.label_text, clean_destination=not extract_path_override, finished_signal=self.signals.finished)
             
             # Update info.json with all available data
             page_url = existing_mod_page or Util.get_gb_page_url_from_item_data(full_item_data)
             self._create_and_update_mod_info(extract_path, full_item_data, file_info, page_url)
 
             os.remove(temp_archive_path)
-            self.signals.finished.emit()
+            # If we were downloading to a temp folder (like for UE4SS), clean it up.
+            if "temp_downloads" in self.mods_folder:
+                shutil.rmtree(self.mods_folder, ignore_errors=True)
 
         except Exception as e:
             if temp_archive_path and os.path.exists(temp_archive_path):
@@ -190,13 +193,24 @@ class DownloadManager:
 
             self.signals.label_text.emit("Extracting...")
             extract_path = os.path.join(self.mods_folder, item_name)
-            Util.extract_archive(temp_archive_path, extract_path, self.signals.label_text)
+            Util.extract_archive(temp_archive_path, extract_path, self.signals.label_text, finished_signal=self.signals.finished)
 
             self._update_mod_info_with_version(extract_path, item_version)
             self._update_mod_info_with_page(extract_path, page_url)
 
+            # Also create a rich info.json using the same helper so we include pak metadata
+            try:
+                # Find the specific file entry from the item data that matches the download URL
+                file_info = next((f for f in item_data.get('_aFiles', []) if f.get('_sDownloadUrl') == download_url), None)
+                # If not found, take the first file entry as a best-effort
+                if file_info is None:
+                    file_info = item_data.get('_aFiles', [None])[0]
+                # Create/update info.json with pak_data and other metadata
+                self._create_and_update_mod_info(extract_path, item_data, file_info or {}, page_url)
+            except Exception as e:
+                print(f"Warning: failed to create detailed info.json for {extract_path}: {e}")
+
             os.remove(temp_archive_path)
-            self.signals.finished.emit()
 
         except Exception as e:
             if temp_archive_path and os.path.exists(temp_archive_path):
@@ -235,6 +249,15 @@ class DownloadManager:
                 "mod_type": Util.read_mod_info(mod_path).get('mod_type', 'pak'), # Preserve auto-detected type
                 "replaced_files": Util.generate_mod_file_list(mod_path) # Generate file manifest
             }
+
+            # If the parser exe is available, augment info.json with pak_data
+            try:
+                pak_data = PakInspector.generate_mod_pak_manifest(mod_path)
+                if pak_data:
+                    new_info['pak_data'] = pak_data
+            except Exception as e:
+                # Non-fatal: log warning and proceed without pak data
+                print(f"Warning: PakInspector failed for {os.path.basename(mod_path)}: {e}")
 
             with open(info_path, "w", encoding="utf-8") as f:
                 json.dump(new_info, f, indent=2)
