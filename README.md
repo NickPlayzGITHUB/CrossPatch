@@ -44,3 +44,20 @@ Below is a template you can use. The `mod_type` field is optional and defaults t
   "mod_type": "pak" 
 }
 ```
+
+## Privacy and Security
+
+CrossPatch is designed to be safe and transparent.
+
+### Privacy Policy
+
+The application does not collect or transmit any personal user data. For more details, please see our [Privacy Policy](docs/PRIVACY.md).
+
+### Code Signing Policy
+
+To improve security and user trust, our official releases are signed.
+
+*   Free code signing provided by [SignPath.io](https://signpath.io), certificate by SignPath Foundation.
+*   **Committers and Reviewers**: [NockCS](https://github.com/NickPlayzGITHUB), [RED1](https://github.com/RED1-dev), [AntiApple4life](https://github.com/Anti-Apple4life), [Ben Thalmann](https://github.com/benthal)
+*   **Approvers**: [NockCS](https://github.com/NickPlayzGITHUB)
+```
