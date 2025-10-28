@@ -346,9 +346,9 @@ class CrossPatchWindow(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents) # Enabled Checkbox
         header.setSectionResizeMode(2, QHeaderView.Stretch)          # Name
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents) # Version
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Author
+        header.setSectionResizeMode(4, QHeaderView.Stretch) # Author
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents) # Type
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents) # Config
+        header.setSectionResizeMode(6, QHeaderView.Stretch)  # Config
         self.tree.setColumnHidden(0, True) # Hide update column by default
 
         # Connect to the custom signal for drag-and-drop reordering.
