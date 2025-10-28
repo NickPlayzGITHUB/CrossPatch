@@ -38,6 +38,14 @@ class WorkerSignals(QObject):
     error = Signal(tuple)
     result = Signal(object)
 
+# --- Pending changes tracking ---
+class PendingChange:
+    def __init__(self, item, column):
+        self.item = item
+        self.column = column
+        self.mod_folder_name = item.data(0, Qt.UserRole)
+        self.new_state = item.checkState(1) if column == 1 else None
+
 # --- Worker for background image loading ---
 class ImageLoader(QRunnable):
     """Worker thread for loading an image from a URL."""
@@ -46,6 +54,15 @@ class ImageLoader(QRunnable):
         super().__init__()
         self.url = url
         self.signals = WorkerSignals()
+        
+    def stop(self):
+        """Safely stop the worker."""
+        try:
+            self.signals.finished.disconnect()
+            self.signals.error.disconnect()
+            self.signals.result.disconnect()
+        except (RuntimeError, TypeError):
+            pass  # Already disconnected
 
     def run(self):
         """Downloads an image and emits it as a QPixmap."""
@@ -249,6 +266,10 @@ class CrossPatchWindow(QMainWindow):
     update_check_finished = Signal(str, dict)
 
     def __init__(self, instance_socket=None):
+        # Add threading lock for UI updates
+        self._tree_update_lock = threading.Lock()
+        self._background_tasks_lock = threading.Lock()
+        self._background_tasks = []  # Track running background tasks
         super().__init__()
         self.instance_socket = instance_socket
 
@@ -803,9 +824,37 @@ class CrossPatchWindow(QMainWindow):
         # Call the original event handler to maintain default behavior (like dragging)
         QTreeWidget.mousePressEvent(self.tree, event)
 
+    def _run_background_task(self, task, *args, **kwargs):
+        """Safely run a background task with proper cleanup."""
+        def wrapper():
+            try:
+                with self._background_tasks_lock:
+                    self._background_tasks.append(threading.current_thread())
+                task(*args, **kwargs)
+            finally:
+                with self._background_tasks_lock:
+                    try:
+                        self._background_tasks.remove(threading.current_thread())
+                    except ValueError:
+                        pass  # Thread was already removed
+
+        thread = threading.Thread(target=wrapper, daemon=True)
+        thread.start()
+        return thread
+
     def _update_treeview(self, preserve_selection=True):
+        """Update the tree view with thread safety."""
+        if not hasattr(self, '_tree_update_lock'):
+            self._tree_update_lock = threading.Lock()
+            
+        if not self._tree_update_lock.acquire(timeout=1.0):
+            print("Warning: Could not acquire tree update lock, skipping update")
+            return
+        
         # Block signals to prevent on_item_changed from firing recursively
         self.tree.blockSignals(True)
+        self.tree.setUpdatesEnabled(False)
+        
         try:
             # --- Preserve Selection ---
             selected_mod_folder = None
@@ -856,11 +905,6 @@ class CrossPatchWindow(QMainWindow):
             
             # --- Tree Update ---
             self.tree.setColumnHidden(0, not self.updatable_mods)
-            # Disable widget updates to reduce repaint overhead during bulk population
-            try:
-                self.tree.setUpdatesEnabled(False)
-            except Exception:
-                pass
             self.tree.clear()
 
             for mod_folder_name in display_order:
@@ -869,16 +913,11 @@ class CrossPatchWindow(QMainWindow):
                 version = info.get("version", "1.0")
                 author = info.get("author", "Unknown")
                 mod_type = info.get("mod_type", "pak").upper()
-                # Check for file-based config OR json-based config
-                # Avoid expensive filesystem scans during browse rendering: only use
-                # saved 'configuration' from info.json. Full discovery is performed
-                # when the user opens the Configure dialog.
                 has_config = "configuration" in info
                 is_enabled = enabled_mods_map.get(mod_folder_name, False)
 
                 item = QTreeWidgetItem(["", "", name, version, author, mod_type, ""])
                 item.setData(0, Qt.UserRole, mod_folder_name)
-
                 item.setCheckState(1, Qt.Checked if is_enabled else Qt.Unchecked)
 
                 if name in updatable_mod_names:
@@ -897,12 +936,17 @@ class CrossPatchWindow(QMainWindow):
                     self.tree.setCurrentItem(item)
 
             print("Treeview updated")
+        
+        except Exception as e:
+            print(f"Error updating treeview: {e}")
+        
+        finally:
             try:
                 self.tree.setUpdatesEnabled(True)
             except Exception:
                 pass
-        finally:
             self.tree.blockSignals(False)
+            self._tree_update_lock.release()
 
     def save_and_refresh(self):
         # Update treeview with sorting (preserve_selection=False to trigger sorting)
