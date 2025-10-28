@@ -69,6 +69,7 @@ class OneClickInstallDialog(QDialog):
         button_box = QDialogButtonBox(QDialogButtonBox.Yes | QDialogButtonBox.No)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
+        button_box.setCenterButtons(True)
         main_layout.addWidget(button_box)
 
         # --- Image Loading ---

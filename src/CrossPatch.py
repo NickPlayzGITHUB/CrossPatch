@@ -527,10 +527,6 @@ class CrossPatchWindow(QMainWindow):
         self.save_btn.clicked.connect(self.save_and_refresh)
         bottom_button_layout.addWidget(self.save_btn)
 
-        self.add_mod_btn = QPushButton(QIcon(os.path.join(self.assets_path, 'gb_icon.png')), " Add Mod from URL")
-        # Use a lambda to ensure no arguments are passed when the button is clicked.
-        self.add_mod_btn.clicked.connect(lambda: self.add_mod_from_url())
-        bottom_button_layout.addWidget(self.add_mod_btn)
 
         bottom_button_layout.addStretch()
 
@@ -552,7 +548,15 @@ class CrossPatchWindow(QMainWindow):
         self.centralWidget().layout().addWidget(launch_btn)
 
         # --- Status Bar ---
-        self.statusBar().showMessage(f"CrossPatch {APP_VERSION}")
+        # Changed it to a label cause I couldn't figure out how to center the text, might be a skill issue
+        status_bar = self.statusBar()
+        status_widget = QWidget()
+        status_layout = QHBoxLayout(status_widget)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        version_label = QLabel(f"CrossPatch {APP_VERSION}")
+        status_layout.addWidget(version_label, alignment=Qt.AlignCenter)
+        
+        status_bar.addWidget(status_widget, 1)
 
     def event(self, event):
         """Handles custom events posted to the main window."""
@@ -590,7 +594,6 @@ class CrossPatchWindow(QMainWindow):
         
         self.refresh_btn.setVisible(is_mods_tab)
         self.save_btn.setVisible(is_mods_tab)
-        self.add_mod_btn.setVisible(is_mods_tab)
         self.search_btn.setVisible(is_mods_tab)
 
         if not is_mods_tab and self.search_frame.isVisible():
