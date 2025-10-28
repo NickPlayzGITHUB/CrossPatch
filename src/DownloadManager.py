@@ -12,7 +12,6 @@ from PySide6.QtCore import Signal, QObject, Qt, QTimer
 import Util
 from Constants import APP_VERSION
 import PakInspector
-import SecurityUtil  # Add security utilities
 
 # --- Handle optional archive dependencies ---
 try:
