@@ -48,6 +48,12 @@
               "target": "Package",
               "version": "[1.1.0, )"
             },
+            "Microsoft.NET.ILLink.Tasks": {
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[8.0.19, )",
+              "autoReferenced": true
+            },
             "System.CommandLine": {
               "target": "Package",
               "version": "[2.0.0-beta4.22272.1, )"
@@ -70,6 +76,10 @@
               "version": "[8.0.19, 8.0.19]"
             },
             {
+              "name": "Microsoft.AspNetCore.App.Runtime.win-x64",
+              "version": "[8.0.19, 8.0.19]"
+            },
+            {
               "name": "Microsoft.NETCore.App.Host.win-x64",
               "version": "[8.0.19, 8.0.19]"
             },
@@ -78,7 +88,15 @@
               "version": "[8.0.19, 8.0.19]"
             },
             {
+              "name": "Microsoft.NETCore.App.Runtime.win-x64",
+              "version": "[8.0.19, 8.0.19]"
+            },
+            {
               "name": "Microsoft.WindowsDesktop.App.Ref",
+              "version": "[8.0.19, 8.0.19]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Runtime.win-x64",
               "version": "[8.0.19, 8.0.19]"
             }
           ],
@@ -88,6 +106,11 @@
             }
           },
           "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.304/PortableRuntimeIdentifierGraph.json"
+        }
+      },
+      "runtimes": {
+        "win-x64": {
+          "#import": []
         }
       }
     }

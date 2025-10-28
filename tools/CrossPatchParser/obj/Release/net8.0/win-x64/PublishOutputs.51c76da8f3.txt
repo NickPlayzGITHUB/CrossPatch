@@ -1,0 +1,3 @@
+C:\games\Projects\CrossPatchNick\tools\CrossPatchParser\bin\Release\net8.0\publish\CrossPatchParser.pdb
+C:\games\Projects\CrossPatchNick\tools\CrossPatchParser\bin\Release\net8.0\publish\CUE4Parse-Natives.dll
+C:\games\Projects\CrossPatchNick\tools\CrossPatchParser\bin\Release\net8.0\publish\CrossPatchParser.exe
