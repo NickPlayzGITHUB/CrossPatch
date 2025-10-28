@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QMessageBox, QFileDialog, QInputDialog
 )
-from PySide6.QtGui import QIcon, QAction, QFont, QDrag, QPixmap, QPainter, QColor, QDesktopServices, QImage, QDropEvent, QShortcut, QKeySequence
+from PySide6.QtGui import QIcon, QAction, QFont, QDrag, QPixmap, QPainter, QColor, QDesktopServices, QImage, QDropEvent, QShortcut, QKeySequence, QMouseEvent
 from PySide6.QtCore import Qt, QMimeData, QPoint, Signal, QObject, QUrl, QSize, QThread, QTimer, QRunnable, QThreadPool, QEvent
 
 from Credits import CreditsWindow
@@ -25,6 +25,7 @@ from ConflictDialog import ConflictDialog
 from FileSelectDialog import FileSelectDialog
 from OneClickInstallDialog import OneClickInstallDialog
 from EditMod import EditModWindow
+from ModConfigDialog import ModConfigDialog
 from ProfileManager import ProfileManager
 import Config
 import Util
@@ -220,6 +221,23 @@ class ModTreeWidget(QTreeWidget):
             # Emit our custom signal now that the order has changed.
             self.orderChanged.emit()
 
+    def mouseMoveEvent(self, event: QMouseEvent):
+        """Change cursor to pointing hand when hovering over clickable icons."""
+        item = self.itemAt(event.position().toPoint())
+        if item:
+            column = self.columnAt(event.position().toPoint().x())
+            # Check for update icon (col 0) or config icon (col 6)
+            is_clickable_update = (column == 0 and item.text(0))
+            is_clickable_config = (column == 6 and item.text(6))
+
+            if is_clickable_update or is_clickable_config:
+                self.viewport().setCursor(Qt.PointingHandCursor)
+            else:
+                self.viewport().setCursor(Qt.ArrowCursor)
+        else:
+            self.viewport().setCursor(Qt.ArrowCursor)
+        super().mouseMoveEvent(event)
+
 
 class CrossPatchWindow(QMainWindow):
     # Signal to handle protocol URL from a non-GUI thread
@@ -315,8 +333,8 @@ class CrossPatchWindow(QMainWindow):
 
         # Mods List (Treeview)
         self.tree = ModTreeWidget()
-        self.tree.setColumnCount(6)
-        self.tree.setHeaderLabels(["", "", "Mod Name", "Version", "Author", "Type"])
+        self.tree.setColumnCount(7)
+        self.tree.setHeaderLabels(["", "", "Mod Name", "Version", "Author", "Type", "Config"])
         self.tree.setSelectionMode(QTreeWidget.SingleSelection)
         self.tree.setDragDropMode(QTreeWidget.InternalMove)
         self.tree.setDragEnabled(True)
@@ -330,11 +348,13 @@ class CrossPatchWindow(QMainWindow):
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents) # Version
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Author
         header.setSectionResizeMode(5, QHeaderView.ResizeToContents) # Type
+        header.setSectionResizeMode(6, QHeaderView.ResizeToContents) # Config
         self.tree.setColumnHidden(0, True) # Hide update column by default
 
         # Connect to the custom signal for drag-and-drop reordering.
         self.tree.orderChanged.connect(self.on_drag_end)
         self.tree.viewport().setAcceptDrops(True)
+        self.tree.viewport().setMouseTracking(True) # For hover cursor changes
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self.on_right_click)
         self.tree.itemClicked.connect(self.on_item_clicked)
@@ -599,12 +619,18 @@ class CrossPatchWindow(QMainWindow):
 
     def on_item_clicked(self, item, column):
         """Handle clicks on specific columns, like the checkbox."""
+        if not item:
+            return
+
         mod_folder_name = item.data(0, Qt.UserRole)
         if not mod_folder_name:
             return
 
         if column == 0: # 'Update' column
             self.on_update_column_click(mod_folder_name)
+        elif column == 6 and item.text(6): # 'Config' column
+            self.configure_selected_mod()
+
 
     def on_item_changed(self, item, column):
         """Handles changes to an item, specifically the checkbox state."""
@@ -636,6 +662,10 @@ class CrossPatchWindow(QMainWindow):
         menu.addAction("Open containing folder", self.open_selected_mod_folder)
         menu.addAction("Edit mod info", self.edit_selected_mod_info)
         menu.addSeparator()
+        
+        # Add "Configure" option if applicable
+        if item.text(6) == "⚙️":
+            menu.addAction("Configure mod...", self.configure_selected_mod)
 
         # Only show update option if mod has a page URL
         mod_info = Util.read_mod_info(os.path.join(self.cfg["mods_folder"], mod_folder_name))
@@ -741,9 +771,11 @@ class CrossPatchWindow(QMainWindow):
                 version = info.get("version", "1.0")
                 author = info.get("author", "Unknown")
                 mod_type = info.get("mod_type", "pak").upper()
+                # Check for file-based config OR json-based config
+                has_config = bool(Util.discover_mod_configuration(os.path.join(self.cfg["mods_folder"], mod_folder_name))) or "configuration" in info
                 is_enabled = enabled_mods_map.get(mod_folder_name, False)
 
-                item = QTreeWidgetItem(["", "", name, version, author, mod_type])
+                item = QTreeWidgetItem(["", "", name, version, author, mod_type, ""])
                 item.setData(0, Qt.UserRole, mod_folder_name)
 
                 item.setCheckState(1, Qt.Checked if is_enabled else Qt.Unchecked)
@@ -754,6 +786,9 @@ class CrossPatchWindow(QMainWindow):
                     font.setBold(True)
                     item.setFont(2, font)
                     item.setForeground(2, QColor("springgreen"))
+                
+                if has_config:
+                    item.setText(6, "⚙️")
 
                 self.tree.addTopLevelItem(item)
 
@@ -862,6 +897,31 @@ class CrossPatchWindow(QMainWindow):
                 selected.setText(5, new_mod_type.upper())
         else:
             print("Edit mod info cancelled.")
+
+    def configure_selected_mod(self):
+        """Opens the configuration dialog for the selected mod."""
+        selected = self.tree.currentItem()
+        if not selected:
+            return
+
+        folder_name = selected.data(0, Qt.UserRole)
+        mod_path = os.path.join(self.cfg["mods_folder"], folder_name)
+        
+        # Discover the configuration from the file system
+        config_data = Util.discover_mod_configuration(mod_path)
+        if not config_data:
+            QMessageBox.information(self, "No Configuration", "This mod is not set up for file-based configuration.")
+            return
+
+        active_profile = self.profile_manager.get_active_profile()
+        current_selections = active_profile.get("mod_configurations", {}).get(folder_name, {})
+
+        dialog = ModConfigDialog(self, selected.text(2), config_data, current_selections)
+        if dialog.exec():
+            new_selections = dialog.get_selections()
+            self.profile_manager.set_mod_configuration(folder_name, new_selections)
+            # A refresh is needed to apply the changes by renaming files.
+            self.refresh()
 
     def on_update_column_click(self, mod_folder_name):
         mod_update_info = next((v for k, v in self.updatable_mods.items() if k == mod_folder_name), None)

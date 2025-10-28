@@ -442,6 +442,85 @@ def read_mod_info(mod_path):
         "mod_type": detected_type
     }
 
+def discover_mod_configuration(mod_path):
+    """
+    Discovers a mod's configuration by scanning its subdirectories.
+    A subdirectory is considered a configuration 'category' if it contains
+    at least two subfolders, each with a 'desc.ini' file.
+    
+    Returns:
+        A dictionary representing the configuration, or None.
+        Example: {'Models': {'Bass_AI': {'name': 'Bass AI', 'desc': '...'}, ...}}
+    """
+    from ModConfigDialog import read_desc_ini # Local import
+    discovered_config = {}
+
+    if not os.path.isdir(mod_path):
+        return None
+
+    for category_name in os.listdir(mod_path):
+        category_path = os.path.join(mod_path, category_name)
+        if not os.path.isdir(category_path):
+            continue
+
+        options = {}
+        for option_name in os.listdir(category_path):
+            option_path = os.path.join(category_path, option_name)
+            desc_ini_path = os.path.join(option_path, 'desc.ini')
+            if os.path.isdir(option_path) and os.path.exists(desc_ini_path):
+                ini_data = read_desc_ini(desc_ini_path)
+                if ini_data:
+                    options[option_name] = ini_data
+        
+        # A valid category must have at least two configurable options
+        if len(options) >= 2:
+            discovered_config[category_name] = options
+
+    return discovered_config if discovered_config else None
+
+
+def _apply_mod_configuration(mod_install_path, mod_info, profile_data):
+    """Renames files within an installed mod folder based on configuration."""
+    config = mod_info.get("configuration")
+    if not config:
+        return
+
+    # This function is no longer needed with the new copy-on-select logic.
+    if True:
+        return
+
+    mod_name = os.path.basename(mod_install_path)
+    mod_configs = profile_data.get("mod_configurations", {}).get(mod_name, {})
+    
+    for category, options in config.items():
+        # Default to the first option if none is selected for the category
+        selected_option_folder = mod_configs.get(category, next(iter(options)))
+        
+        for option_folder_name in options.keys():
+            is_enabled = (option_folder_name == selected_option_folder)
+            source_option_path = os.path.join(mod_install_path, category, option_folder_name)
+            
+            if not os.path.isdir(source_option_path):
+                continue
+
+            for filename in os.listdir(source_option_path):
+                # Skip the description file itself
+                if filename.lower() == 'desc.ini':
+                    continue
+                
+                source_file = os.path.join(source_option_path, filename)
+                dest_file = os.path.join(mod_install_path, filename)
+                disabled_dest_file = f"{dest_file}_disabled"
+
+                if is_enabled:
+                    # If this is the selected option, ensure its files are enabled
+                    if os.path.exists(disabled_dest_file) and os.path.basename(disabled_dest_file) == f"{filename}_disabled":
+                         os.rename(disabled_dest_file, dest_file)
+                else:
+                    # If this is NOT the selected option, ensure its files are disabled
+                    if os.path.exists(dest_file):
+                        os.rename(dest_file, disabled_dest_file)
+
 def get_game_mods_folder(cfg):
     return os.path.join(
         cfg["game_root"],
@@ -618,14 +697,32 @@ def enable_mod(mod_name, cfg, priority, profile_data):
         # For Logic mods, copy the contents directly. They are removed entirely on disable.
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
     else: # Default to pak mod behavior
+        # Discover file-based configuration
+        file_config = discover_mod_configuration(src)
+        if file_config:
+            mod_info['configuration'] = file_config # Add to in-memory info
+
         # Handles 'pak' mods. Create a folder with priority prefix, e.g., "0.MyMod"
         prefixed_mod_name = f"{priority:03d}.{mod_name}"
         dst = os.path.join(get_game_mods_folder(cfg), prefixed_mod_name)
         os.makedirs(dst, exist_ok=True)
-        for root, _, files in os.walk(src):
+
+        # If we have a file-based config, we need to copy files from the option folders
+        if file_config:
+            mod_configs = profile_data.get("mod_configurations", {}).get(mod_name, {})
+            for category, options in file_config.items():
+                # Default to the first option if none is selected for the category
+                selected_option_folder = mod_configs.get(category, next(iter(options.keys()), None))
+
+                if selected_option_folder:
+                    option_path = os.path.join(src, category, selected_option_folder)
+                    print(f"Copying selected option: '{category}/{selected_option_folder}'")
+                    shutil.copytree(option_path, dst, dirs_exist_ok=True)
+        
+        # Copy all other files from the root of the mod folder
+        for root, dirs, files in os.walk(src):
             rel_root = os.path.relpath(root, src)
             target_root = os.path.join(dst, rel_root) if rel_root != "." else dst
-            os.makedirs(target_root, exist_ok=True)
             for f in files:
                 if f.lower() == "info.json":
                     continue
@@ -633,6 +730,11 @@ def enable_mod(mod_name, cfg, priority, profile_data):
                     os.path.join(root, f),
                     os.path.join(target_root, f)
                 )
+            # Stop the walk from going into the category directories we already handled
+            if file_config:
+                dirs[:] = [d for d in dirs if d not in file_config]
+            break # Only copy from top-level
+
 
     profile_data["enabled_mods"][mod_name] = True
 
