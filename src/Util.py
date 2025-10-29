@@ -952,41 +952,9 @@ def enable_mod(mod_name, cfg, priority, profile_data):
         # For Logic mods, copy the contents directly. They are removed entirely on disable.
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
     else: # Default to pak mod behavior
-        # Discover file-based configuration
-        file_config = discover_mod_configuration(src)
-        if file_config:
-            mod_info['configuration'] = file_config # Add to in-memory info
-
-        # Handles 'pak' mods. Create a folder with priority prefix, e.g., "0.MyMod"
-        prefixed_mod_name = f"{priority:03d}.{mod_name}"
-        dst = os.path.join(get_game_mods_folder(cfg), prefixed_mod_name)
-        os.makedirs(dst, exist_ok=True)
-
-        # If we have a file-based config, we need to copy files from the option folders
-        if file_config:
-            mod_configs = profile_data.get("mod_configurations", {}).get(mod_name, {})
-            for category, options in file_config.items():
-                # Default to the first option if none is selected for the category
-                selected_option_folder = mod_configs.get(category, next(iter(options.keys()), None))
-
-                if selected_option_folder:
-                    option_path = os.path.join(src, category, selected_option_folder)
-                    print(f"Copying selected option: '{category}/{selected_option_folder}'")
-                    shutil.copytree(option_path, dst, dirs_exist_ok=True)
-        
-            # For config mods, copy only top-level files, excluding config categories
-            for item in os.listdir(src):
-                s_item = os.path.join(src, item)
-                if item.lower() == "info.json" or item in file_config:
-                    continue
-                if os.path.isfile(s_item):
-                    shutil.copy2(s_item, dst)
-        else:
-            # For non-config mods, copy everything
-            if file_config:
-                shutil.copytree(src, dst, ignore=shutil.ignore_patterns('info.json', *file_config.keys()), dirs_exist_ok=True)
-            else:
-                shutil.copytree(src, dst, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
+        # Pak mod installation is now handled by the PakBatchProcessor to avoid UI blocking.
+        # This function only handles non-pak mods now.
+        pass
 
 
     profile_data["enabled_mods"][mod_name] = True

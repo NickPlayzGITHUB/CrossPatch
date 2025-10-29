@@ -1,10 +1,10 @@
 """Module for batch processing pak files with progress reporting."""
 
 from typing import List, Dict, Tuple, Optional
-import os
+import os 
 import shutil
 import re
-import threading
+import threading 
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar
 from PySide6.QtCore import Qt, Signal, QObject
 import PakInspector
@@ -143,34 +143,36 @@ class PakBatchProcessor:
 
         # Copy pak files from mod to target
         source_path = os.path.join(self.cfg["mods_folder"], mod_name)
-        self._copy_pak_files(source_path, target_path)
+        self._copy_mod_files(source_path, target_path, mod_name)
 
     def _disable_mod(self, mod_name: str, pak_dst: str) -> None:
         """Disable a mod by removing its pak files."""
         self._remove_mod_folders(pak_dst, mod_name)
 
-    def _copy_pak_files(self, source_path: str, target_path: str) -> None:
-        """Copy pak/utoc/ucas files from source to target directory.
+    def _copy_mod_files(self, source_path: str, target_path: str, mod_name: str) -> None:
+        """Copy mod files from source to target, respecting file-based configurations."""
+        import Util # Local import to avoid circular dependency issues
 
-        This will copy .pak, .utoc and .ucas files and preserve relative
-        subdirectory structure from the source mod folder into the
-        target priority folder.
-        """
-        # Walk through source directory
-        for root, _, files in os.walk(source_path):
-            for file in files:
-                # Include pak, utoc and ucas files (case-insensitive)
-                if file.lower().endswith(('.pak', '.utoc', '.ucas')):
-                    src_file = os.path.join(root, file)
-                    # Calculate relative path from source root
-                    rel_path = os.path.relpath(src_file, source_path)
-                    dst_file = os.path.join(target_path, rel_path)
+        file_config = Util.discover_mod_configuration(source_path)
 
-                    # Create subdirectories if needed
-                    os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-
-                    # Copy the file
-                    shutil.copy2(src_file, dst_file)
+        if file_config:
+            # --- Logic for Configurable Mods ---
+            mod_configs = self.profile_data.get("mod_configurations", {}).get(mod_name, {})
+            for category, options in file_config.items():
+                selected_option_folder = mod_configs.get(category, next(iter(options.keys()), None))
+                if selected_option_folder:
+                    option_path = os.path.join(source_path, category, selected_option_folder)
+                    if os.path.isdir(option_path):
+                        shutil.copytree(option_path, target_path, dirs_exist_ok=True)
+            
+            # Copy top-level files, excluding config categories and info.json
+            for item in os.listdir(source_path):
+                s_item = os.path.join(source_path, item)
+                if os.path.isfile(s_item) and item.lower() != "info.json" and item not in file_config:
+                    shutil.copy2(s_item, target_path)
+        else:
+            # --- Logic for Simple/Non-Configurable Mods ---
+            shutil.copytree(source_path, target_path, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
 
     def _remove_mod_folders(self, pak_dst: str, mod_name: str) -> None:
         """Remove all priority folders for a given mod."""
