@@ -150,19 +150,25 @@ class PakBatchProcessor:
         self._remove_mod_folders(pak_dst, mod_name)
 
     def _copy_pak_files(self, source_path: str, target_path: str) -> None:
-        """Copy pak files from source to target directory."""
+        """Copy pak/utoc/ucas files from source to target directory.
+
+        This will copy .pak, .utoc and .ucas files and preserve relative
+        subdirectory structure from the source mod folder into the
+        target priority folder.
+        """
         # Walk through source directory
         for root, _, files in os.walk(source_path):
             for file in files:
-                if file.lower().endswith('.pak'):
+                # Include pak, utoc and ucas files (case-insensitive)
+                if file.lower().endswith(('.pak', '.utoc', '.ucas')):
                     src_file = os.path.join(root, file)
                     # Calculate relative path from source root
                     rel_path = os.path.relpath(src_file, source_path)
                     dst_file = os.path.join(target_path, rel_path)
-                    
+
                     # Create subdirectories if needed
                     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
-                    
+
                     # Copy the file
                     shutil.copy2(src_file, dst_file)
 

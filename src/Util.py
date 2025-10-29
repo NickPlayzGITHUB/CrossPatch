@@ -744,7 +744,7 @@ def get_active_pak_files(mod_path, mod_info, profile_data):
             option_path = os.path.join(mod_path, category, selected_option)
             if os.path.isdir(option_path):
                 for f in os.listdir(option_path):
-                    if f.endswith('.pak') or f.endswith('.utoc'):
+                    if f.endswith('.pak') or f.endswith('.utoc') or f.endswith('.ucas'):
                         active_paks.add(os.path.join(category, selected_option, f))
                         
     return active_paks
