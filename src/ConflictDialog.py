@@ -24,7 +24,7 @@ class ConflictDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Mod Conflict Detected")
         self.setModal(True)
-        self.setMinimumWidth(550)
+        self.setMinimumWidth(750)
 
         self.title = title
         self.conflicts = conflicts
@@ -51,7 +51,7 @@ class ConflictDialog(QDialog):
         self.details_tree.setColumnCount(2)
         self.details_tree.setHeaderLabels(["File Path", "Provided By"])
         self.details_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.details_tree.header().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.details_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         details_layout.addWidget(self.details_tree)
         self.details_widget.setVisible(False) # Hidden by default
         main_layout.addWidget(self.details_widget)

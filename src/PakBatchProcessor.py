@@ -182,11 +182,18 @@ class PakBatchProcessor:
                     if os.path.isdir(option_path):
                         shutil.copytree(option_path, target_path, dirs_exist_ok=True)
             
-            # Copy top-level files, excluding config categories and info.json
+            # Copy any other files AND directories that are not part of the configuration.
             for item in os.listdir(source_path):
                 s_item = os.path.join(source_path, item)
-                if os.path.isfile(s_item) and item.lower() != "info.json" and item not in file_config:
-                    shutil.copy2(s_item, target_path)
+                # Ignore info.json and any directory that is a configuration category.
+                if item.lower() == "info.json" or item in file_config:
+                    continue
+                
+                d_item = os.path.join(target_path, item)
+                if os.path.isdir(s_item):
+                    shutil.copytree(s_item, d_item, dirs_exist_ok=True)
+                elif os.path.isfile(s_item):
+                    shutil.copy2(s_item, d_item)
         else:
             # --- Logic for Simple/Non-Configurable Mods ---
             shutil.copytree(source_path, target_path, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
