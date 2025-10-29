@@ -606,7 +606,6 @@ class CrossPatchWindow(QMainWindow):
         """Saves window size and closes the application."""
         self._is_closing = True
         print("Saving configuration before exiting...")
-        self.refresh()
         self.cfg["window_geometry"] = self.saveGeometry().toHex().data().decode()
         self.profile_manager.save()
         if self.instance_socket:
