@@ -21,13 +21,18 @@ def _possible_parser_paths() -> List[str]:
 
 
 def run_parser(mod_path: str, name: Optional[str] = None, author: Optional[str] = None,
-               version: Optional[str] = None, mount_point: Optional[str] = None) -> Dict:
+               version: Optional[str] = None, mount_point: Optional[str] = None,
+               parser_path: Optional[str] = None) -> Dict:
     """
     Runs the CrossPatchParser tool to analyze pak files in a mod folder.
     
     Args:
         mod_path: Path to the mod folder containing pak file(s)
         name: Optional mod name
+        author: Optional mod author
+        version: Optional mod version
+        mount_point: Optional mount point override
+        parser_path: Optional path to parser executable (to avoid searching multiple times)
         author: Optional mod author
         version: Optional mod version
         mount_point: Optional mount point for pak files

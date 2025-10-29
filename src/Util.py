@@ -1101,18 +1101,30 @@ def enable_mods_from_priority(priority_list, enabled_mods_dict, cfg, root_window
     Iterates through the master priority list and enables mods that are marked as enabled,
     assigning them a priority based on their position in the list.
     """
-    # This counter is only for PAK mods to ensure they are prefixed correctly.
+    from PakBatchProcessor import PakBatchProcessor
+
+    # Create lists to track pak mods and other mods separately
+    pak_mods = []
     enabled_pak_mod_count = 0
+    
+    # First pass: Build list of mods to process
     for mod_name in priority_list:
         if enabled_mods_dict.get(mod_name, False):
             mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
             mod_type = mod_info.get("mod_type", "pak")
-
-            # The priority number is only relevant for pak mods.
-            priority_for_mod = enabled_pak_mod_count if mod_type == "pak" else 0
-            enable_mod_with_ui_pyside(mod_name, cfg, priority_for_mod, root_window, profile_data)
+            
             if mod_type == "pak":
+                pak_mods.append({
+                    "name": mod_name,
+                    "enabled": True,
+                    "priority": enabled_pak_mod_count
+                })
                 enabled_pak_mod_count += 1
+
+    # Initialize batch processor and process pak mods
+    if pak_mods:
+        batch_processor = PakBatchProcessor(cfg, profile_data)
+        batch_processor.process_mods_batch(root_window, pak_mods)
 
 def extract_archive(archive_path, dest_path, progress_signal=None, clean_destination=True, finished_signal=None):
     """
