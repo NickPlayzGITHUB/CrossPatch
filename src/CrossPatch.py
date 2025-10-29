@@ -261,6 +261,7 @@ class CrossPatchWindow(QMainWindow):
         self.active_download_manager = None # To hold a reference
         self._resize_timer = None
         self.assets_path = Util.find_assets_dir()
+        self._is_closing = False
 
         # --- Drag & Drop Data ---
         self._drag_start_pos = None
@@ -603,6 +604,7 @@ class CrossPatchWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Saves window size and closes the application."""
+        self._is_closing = True
         print("Saving configuration before exiting...")
         self.refresh()
         self.cfg["window_geometry"] = self.saveGeometry().toHex().data().decode()
@@ -971,6 +973,10 @@ class CrossPatchWindow(QMainWindow):
         Performs all UI updates on the main thread after background processing.
         """
         try:
+            # If the window is closing, don't attempt any further UI updates.
+            if self._is_closing:
+                return
+
             # Re-enable mods based on the new priority list (this includes UI-blocking PakBatchProcessor if any)
             enabled_mods = self.profile_manager.get_active_profile().get("enabled_mods", {})
             Util.enable_mods_from_priority(new_priority_list, enabled_mods, self.cfg, self, self.profile_manager.get_active_profile())

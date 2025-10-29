@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QDialog, QLabel, QVBoxL
 
 from Constants import UPDATE_URL, APP_VERSION, STEAM_APP_ID
 from Constants import BROWSER_USER_AGENT # Import the new constant
-from Config import CONFIG_DIR 
+from Config import CONFIG_DIR, is_packaged 
 import PakInspector
 
 # File storing user-suppressed conflict reminders. Keys are tuples stored as
@@ -81,10 +81,6 @@ try:
     UNRAR_SUPPORT = True
 except ImportError:
     UNRAR_SUPPORT = False
-
-def is_packaged():
-    """Checks if the application is running as a packaged executable."""
-    return getattr(sys, 'frozen', False) or "__compiled__" in globals()
 
 def find_assets_dir(max_up_levels=4, verbose=False):
     """
@@ -978,21 +974,19 @@ def enable_mod(mod_name, cfg, priority, profile_data):
                     print(f"Copying selected option: '{category}/{selected_option_folder}'")
                     shutil.copytree(option_path, dst, dirs_exist_ok=True)
         
-        # Copy all other files from the root of the mod folder
-        for root, dirs, files in os.walk(src):
-            rel_root = os.path.relpath(root, src)
-            target_root = os.path.join(dst, rel_root) if rel_root != "." else dst
-            for f in files:
-                if f.lower() == "info.json":
+            # For config mods, copy only top-level files, excluding config categories
+            for item in os.listdir(src):
+                s_item = os.path.join(src, item)
+                if item.lower() == "info.json" or item in file_config:
                     continue
-                shutil.copy2(
-                    os.path.join(root, f),
-                    os.path.join(target_root, f)
-                )
-            # Stop the walk from going into the category directories we already handled
+                if os.path.isfile(s_item):
+                    shutil.copy2(s_item, dst)
+        else:
+            # For non-config mods, copy everything
             if file_config:
-                dirs[:] = [d for d in dirs if d not in file_config]
-            break # Only copy from top-level
+                shutil.copytree(src, dst, ignore=shutil.ignore_patterns('info.json', *file_config.keys()), dirs_exist_ok=True)
+            else:
+                shutil.copytree(src, dst, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
 
 
     profile_data["enabled_mods"][mod_name] = True

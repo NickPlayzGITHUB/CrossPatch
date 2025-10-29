@@ -10,7 +10,8 @@ import requests
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar, QMessageBox
 from PySide6.QtCore import Signal, QObject, Qt
 
-from Constants import APP_VERSION
+from Constants import APP_VERSION 
+from Config import is_packaged
 import Util
 
 class UpdaterSignals(QObject):
@@ -47,7 +48,7 @@ class Updater:
     def __init__(self, parent, remote_version_info):
         self.parent = parent
         self.remote_version_info = remote_version_info
-        self.temp_dir = os.path.join(os.path.dirname(sys.executable) if Util.is_packaged() else os.path.dirname(__file__), 'update_temp')
+        self.temp_dir = os.path.join(os.path.dirname(sys.executable) if is_packaged() else os.path.dirname(__file__), 'update_temp')
         self.signals = UpdaterSignals()
         self.progress_dialog = None
 
@@ -95,7 +96,7 @@ class Updater:
             self._download_file_with_progress(download_url, archive_path)
 
             extract_path = os.path.join(self.temp_dir, 'extracted')
-            Util.extract_archive(archive_path, extract_path, self.signals.label_text)
+            self._extract_archive(archive_path, extract_path, self.signals.label_text)
 
             self.signals.label_text.emit("Finalizing...")
             self._run_updater_script(extract_path)
@@ -137,7 +138,7 @@ class Updater:
             self.signals.progress.emit(100)
 
     def _run_updater_script(self, source_path):
-        app_path = os.path.dirname(sys.executable) if Util.is_packaged() else os.path.dirname(os.path.abspath(__file__))
+        app_path = os.path.dirname(sys.executable) if is_packaged() else os.path.dirname(os.path.abspath(__file__))
         app_executable = os.path.basename(sys.executable)
         pid = os.getpid()
 
@@ -189,3 +190,49 @@ rm -rf "{self.temp_dir}"
                 f.write(script_content)
             os.chmod(script_path, 0o755)
             subprocess.Popen([script_path], start_new_session=True)
+
+    def _extract_archive(self, archive_path, dest_path, progress_signal=None, clean_destination=True, finished_signal=None):
+        """
+        Extracts an archive to a destination path and handles nested folders.
+        (Copied from Util to avoid circular import)
+        """
+        from Util import find_assets_dir # Local import
+        print(f"Starting extraction of '{os.path.basename(archive_path)}' to '{dest_path}'")
+        
+        if clean_destination:
+            if os.path.isdir(dest_path):
+                print(f"Destination '{dest_path}' exists. Removing for clean extraction.")
+                shutil.rmtree(dest_path)
+        os.makedirs(dest_path, exist_ok=True)
+
+        archive_format = os.path.splitext(archive_path)[1].lower()
+        print(f"Detected archive format: {archive_format}")
+
+        if progress_signal: progress_signal.emit("Extracting...")
+
+        if archive_format == '.zip':
+            import zipfile
+            print("Using zipfile to extract.")
+            with zipfile.ZipFile(archive_path, 'r') as z_ref:
+                z_ref.extractall(dest_path)
+        elif archive_format == '.7z' and Util.PY7ZR_SUPPORT:
+            import py7zr
+            print("Using py7zr to extract.")
+            with py7zr.SevenZipFile(archive_path, 'r') as z_ref:
+                z_ref.extractall(path=dest_path)
+        elif archive_format == '.rar' and Util.UNRAR_SUPPORT:
+            import rarfile
+            print("Using unrar to extract.")
+            assets_dir = find_assets_dir()
+            unrar_tool_name = "UnRAR.exe" if platform.system() == "Windows" else "unrar"
+            bundled_tool_path = os.path.join(assets_dir, unrar_tool_name)
+
+            if os.path.exists(bundled_tool_path):
+                rarfile.UNRAR_TOOL = bundled_tool_path
+            else:
+                rarfile.UNRAR_TOOL = "unrar"
+
+            with rarfile.RarFile(archive_path) as rf:
+                rf.extractall(path=dest_path)
+        else:
+            raise NotImplementedError(f"Unsupported archive format: {archive_format}. Please install the required library if available.")

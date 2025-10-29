@@ -6,9 +6,12 @@ import ctypes
 import re
 if platform.system() == "Windows": import winreg
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
-
-import Util
-
+ 
+def is_packaged():
+    """Checks if the application is running as a packaged executable."""
+    return getattr(sys, 'frozen', False) or "__compiled__" in globals()
+ 
+ 
 def get_config_dir():
     """
     Determines the appropriate directory for configuration files.
@@ -230,7 +233,7 @@ def register_url_protocol():
 
     try:
         # The command to execute. It differs between dev and packaged app.
-        if Util.is_packaged(): # Packaged app
+        if is_packaged(): # Packaged app
             command = f'"{sys.executable}" "%1"'
         else: # Development (running with python.exe)
             script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src', 'Main.py'))

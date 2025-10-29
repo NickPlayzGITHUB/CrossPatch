@@ -1,7 +1,7 @@
 import configparser
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDialogButtonBox,
-    QFormLayout, QWidget, QScrollArea, QSizePolicy
+    QFormLayout, QWidget, QScrollArea, QSizePolicy, QGroupBox, QTextEdit
 )
 from PySide6.QtCore import Qt
 
@@ -18,62 +18,70 @@ class ModConfigDialog(QDialog):
         self.widgets = {}
 
         self.setWindowTitle(f"Configure '{self.mod_name}'")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(500)
 
         main_layout = QVBoxLayout(self)
 
         # --- Scroll Area for dynamic content ---
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         
         container_widget = QWidget()
-        form_layout = QFormLayout(container_widget)
-        form_layout.setRowWrapPolicy(QFormLayout.WrapAllRows)
-        form_layout.setLabelAlignment(Qt.AlignRight)
+        container_layout = QVBoxLayout(container_widget)
+        container_layout.setSpacing(15)
 
         # --- Dynamically create widgets ---
         for category, options in self.config_data.items():
-            # Create a combo box for the category
+            group_box = QGroupBox(category)
+            group_layout = QVBoxLayout(group_box)
+
             combo_box = QComboBox()
-            
-            # Store a mapping from display name to folder name
-            combo_box.option_map = {}
-            
-            # Populate the combo box
+            desc_label = QLabel("Select an option to see its description.")
+            desc_label.setWordWrap(True)
+            desc_label.setStyleSheet("color: #cccccc; padding: 5px; border-radius: 3px; background-color: #2a2a2a;")
+            desc_label.setMinimumHeight(60)
+            desc_label.setAlignment(Qt.AlignTop)
+
             for option_folder, option_details in options.items():
                 display_name = option_details.get('name', option_folder)
                 description = option_details.get('description', 'No description.')
                 combo_box.addItem(display_name, userData=option_folder)
-                combo_box.setItemData(combo_box.count() - 1, description, Qt.ToolTipRole)
-                combo_box.option_map[option_folder] = display_name
+                combo_box.setItemData(combo_box.count() - 1, description, Qt.UserRole + 1)
 
-            # Set the current selection
+            # Connect signal to update description
+            combo_box.currentIndexChanged.connect(
+                lambda index, cb=combo_box, dl=desc_label: dl.setText(cb.itemData(index, Qt.UserRole + 1))
+            )
+
+            # Set current selection and initial description
             current_option_folder = self.current_selections.get(category)
-            if current_option_folder and current_option_folder in combo_box.option_map:
-                # Find the index corresponding to the saved option folder
+            if current_option_folder:
                 index = combo_box.findData(current_option_folder)
                 if index != -1:
                     combo_box.setCurrentIndex(index)
-            
-            # Add to layout and store widget
-            form_layout.addRow(QLabel(f"<b>{category}:</b>"), combo_box)
+                    desc_label.setText(combo_box.itemData(index, Qt.UserRole + 1))
+                else:
+                    # Fallback if saved option is not found
+                    desc_label.setText(combo_box.itemData(0, Qt.UserRole + 1))
+            else:
+                # Set initial description for the default (first) item
+                desc_label.setText(combo_box.itemData(0, Qt.UserRole + 1))
+
+            group_layout.addWidget(combo_box)
+            group_layout.addWidget(desc_label)
+            container_layout.addWidget(group_box)
+
             self.widgets[category] = combo_box
 
         scroll_area.setWidget(container_widget)
         main_layout.addWidget(scroll_area)
-
-        # --- Description/Help Text ---
-        help_label = QLabel("Hover over an option in the dropdown to see its description.")
-        help_label.setStyleSheet("font-style: italic; color: grey;")
-        main_layout.addWidget(help_label)
 
         # --- OK and Cancel buttons ---
         button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
         main_layout.addWidget(button_box)
-        self.adjustSize()
 
     def accept(self):
         """Update the selections dictionary when 'Save' is clicked."""
