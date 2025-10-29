@@ -24,7 +24,7 @@ class ConflictDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Mod Conflict Detected")
         self.setModal(True)
-        self.setMinimumWidth(750)
+        self.setMinimumWidth(850)
 
         self.title = title
         self.conflicts = conflicts
@@ -52,6 +52,7 @@ class ConflictDialog(QDialog):
         self.details_tree.setHeaderLabels(["File Path", "Provided By"])
         self.details_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
         self.details_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.details_tree.setMinimumHeight(200)
         details_layout.addWidget(self.details_tree)
         self.details_widget.setVisible(False) # Hidden by default
         main_layout.addWidget(self.details_widget)
@@ -97,10 +98,35 @@ class ConflictDialog(QDialog):
 
     def _populate_details_tree(self):
         """Fills the collapsible details tree with specific file conflicts."""
+        # A dictionary to keep track of tree items to avoid creating duplicates
+        # The key will be the full path of the node as a tuple (e.g., ('Content', 'Characters'))
+        # The value will be the QTreeWidgetItem
+        nodes = {}
+        root = self.details_tree.invisibleRootItem()
+
         for file_path, providers in sorted(self.conflicts.items()):
-            provider_str = ", ".join([f"{mod} ({pak.split('/')[-1]})" for mod, pak in providers])
-            item = QTreeWidgetItem([file_path, provider_str])
-            self.details_tree.addTopLevelItem(item)
+            # Split the path into components, ensuring consistent separators
+            path_parts = file_path.replace('\\', '/').split('/')
+            parent_item = root
+
+            # Traverse the path components, creating folder nodes as needed
+            for i in range(len(path_parts)):
+                current_path_tuple = tuple(path_parts[:i+1])
+                
+                if current_path_tuple in nodes:
+                    parent_item = nodes[current_path_tuple]
+                else:
+                    node_text = path_parts[i]
+                    new_item = QTreeWidgetItem([node_text])
+                    
+                    # If this is the last part (the file itself), add the provider info
+                    if i == len(path_parts) - 1:
+                        provider_str = ", ".join([f"{mod} ({pak.split('/')[-1]})" for mod, pak in providers])
+                        new_item.setText(1, provider_str)
+                    
+                    parent_item.addChild(new_item)
+                    nodes[current_path_tuple] = new_item
+                    parent_item = new_item
 
     def on_ignore(self):
         """Saves the selected mod pairs to the ignored list and closes."""
