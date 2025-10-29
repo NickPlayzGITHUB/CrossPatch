@@ -2,151 +2,116 @@ import sys
 from PySide6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QLabel, QTreeWidget,
     QTreeWidgetItem, QHeaderView, QListWidget, QListWidgetItem,
-    QDialogButtonBox, QWidget, QHBoxLayout
+    QDialogButtonBox, QWidget, QHBoxLayout, QPushButton, QFrame
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
+from Util import add_ignored_conflict
 
 
 class ConflictDialog(QDialog):
-    """Unified conflict dialog showing conflicted game files and provider mods.
-
-    Left pane: concise list of conflicting game file paths with a preview of providers.
-    Right pane: checklist of provider mods (with pak names) where the user can
-                select providers to "don't remind me" for this specific mod.
     """
-    def __init__(self, parent, mod_name, conflicts):
+    A dialog to inform the user about mod conflicts. It presents a summary
+    of conflicting mods with an option to view detailed file lists.
+    """
+    def __init__(self, parent, title, conflicts):
         """
         Args:
             parent: parent widget
-            mod_name: the mod being enabled (string)
+            title: The title for the dialog, often the mod being enabled.
             conflicts: dict mapping game file path -> list of (provider_mod, pak_name) tuples
         """
         super().__init__(parent)
-        self.setWindowTitle("Conflicts Detected")
+        self.setWindowTitle("Mod Conflict Detected")
         self.setModal(True)
-        self.resize(900, 450)
+        self.setMinimumWidth(550)
 
-        self.mod_name = mod_name
+        self.title = title
         self.conflicts = conflicts
 
         main_layout = QVBoxLayout(self)
 
-        header = QLabel("The following game files are provided by multiple enabled mods.")
-        font = QFont()
-        font.setBold(True)
-        header.setFont(font)
-        main_layout.addWidget(header)
+        # --- Summary ---
+        summary_text = f"The following mods conflict with each other (they modify the same game files):"
+        main_layout.addWidget(QLabel(summary_text))
 
-        sublabel = QLabel("Select provider mods on the right to stop being reminded about them for this mod.")
-        main_layout.addWidget(sublabel)
+        # --- Conflicting Mods Summary ---
+        self.conflicting_mods_list = QTreeWidget()
+        self.conflicting_mods_list.setHeaderHidden(True)
+        main_layout.addWidget(self.conflicting_mods_list)
+        self._populate_summary_list()
 
-        content = QWidget()
-        content_layout = QHBoxLayout(content)
+        # --- Details Section (collapsible) ---
+        self.details_widget = QWidget()
+        details_layout = QVBoxLayout(self.details_widget)
+        details_layout.setContentsMargins(0, 5, 0, 0)
+        details_layout.addWidget(QLabel("<b>Conflicting Files:</b>"))
 
-        # Left: file list
-        self.file_tree = QTreeWidget()
-        self.file_tree.setColumnCount(2)
-        self.file_tree.setHeaderLabels(["Game File", "Providers"])
-        self.file_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.file_tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.file_tree.setSortingEnabled(True)
+        self.details_tree = QTreeWidget()
+        self.details_tree.setColumnCount(2)
+        self.details_tree.setHeaderLabels(["File Path", "Provided By"])
+        self.details_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.details_tree.header().setSectionResizeMode(1, QHeaderView.Stretch)
+        details_layout.addWidget(self.details_tree)
+        self.details_widget.setVisible(False) # Hidden by default
+        main_layout.addWidget(self.details_widget)
+        self._populate_details_tree()
 
-        # Populate file tree with concise provider preview
-        for fp, provs in sorted(conflicts.items()):
-            # provs is list of tuples (provider_mod, pak_name)
-            prov_texts = []
-            for pm, pak in provs:
-                if pm == mod_name:
-                    continue
-                prov_texts.append(f"{pm} ({pak})")
-            providers_str = ", ".join(prov_texts) if prov_texts else "(self)"
-            item = QTreeWidgetItem([fp, providers_str])
-            self.file_tree.addTopLevelItem(item)
+        # --- Buttons ---
+        button_layout = QHBoxLayout()
 
-        content_layout.addWidget(self.file_tree, 3)
+        self.details_button = QPushButton("View Details")
+        self.details_button.setCheckable(True)
+        self.details_button.toggled.connect(self.details_widget.setVisible)
+        button_layout.addWidget(self.details_button)
 
-        # Right: provider checklist
-        self.provider_list = QListWidget()
-        provider_map = {}
-        for fp, provs in conflicts.items():
-            for pm, pak in provs:
-                if pm == mod_name:
-                    continue
-                provider_map.setdefault(pm, set()).add(pak)
+        button_layout.addStretch()
 
-        for provider_mod, pak_set in sorted(provider_map.items()):
-            pak_list = ", ".join(sorted(pak_set))
-            text = f"{provider_mod} — {pak_list}"
-            item = QListWidgetItem(text)
-            item.setData(Qt.UserRole, provider_mod)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Unchecked)
-            self.provider_list.addItem(item)
+        button_box = QDialogButtonBox()
+        self.ignore_button = button_box.addButton("Ignore Future Conflicts", QDialogButtonBox.ActionRole)
+        self.ok_button = button_box.addButton("OK", QDialogButtonBox.AcceptRole)
+        self.ignore_button.clicked.connect(self.on_ignore)
+        self.ok_button.clicked.connect(self.accept)
+        button_layout.addWidget(button_box)
 
-        content_layout.addWidget(self.provider_list, 1)
+        main_layout.addLayout(button_layout)
+        self.adjustSize()
 
-        main_layout.addWidget(content)
+    def _populate_summary_list(self):
+        """Fills the summary list with pairs of conflicting mods."""
+        mod_pairs = set()
+        for providers in self.conflicts.values():
+            mod_names = sorted([p[0] for p in providers])
+            for i in range(len(mod_names)):
+                for j in range(i + 1, len(mod_names)):
+                    mod_pairs.add(tuple(sorted((mod_names[i], mod_names[j]))))
+        
+        if not mod_pairs:
+            self.conflicting_mods_list.addTopLevelItem(QTreeWidgetItem(["No conflicts found."]))
+            return
 
-        # Action buttons: Rollback, Disable selected providers, Ignore and Close, Cancel
-        from PySide6.QtWidgets import QPushButton
-        self._action = None
+        for mod1, mod2 in sorted(list(mod_pairs)):
+            item = QTreeWidgetItem([f"'{mod1}' ⇄ '{mod2}'"])
+            item.setData(0, Qt.UserRole, (mod1, mod2)) # Store the pair
+            self.conflicting_mods_list.addTopLevelItem(item)
 
-        btn_layout = QHBoxLayout()
+    def _populate_details_tree(self):
+        """Fills the collapsible details tree with specific file conflicts."""
+        for file_path, providers in sorted(self.conflicts.items()):
+            provider_str = ", ".join([f"{mod} ({pak.split('/')[-1]})" for mod, pak in providers])
+            item = QTreeWidgetItem([file_path, provider_str])
+            self.details_tree.addTopLevelItem(item)
 
-        rollback_btn = QPushButton("Rollback (Disable this mod)")
-        rollback_btn.clicked.connect(self._on_rollback)
-        btn_layout.addWidget(rollback_btn)
+    def on_ignore(self):
+        """Saves the selected mod pairs to the ignored list and closes."""
+        selected_items = self.conflicting_mods_list.selectedItems()
+        if not selected_items:
+            for i in range(self.conflicting_mods_list.topLevelItemCount()):
+                selected_items.append(self.conflicting_mods_list.topLevelItem(i))
 
-        disable_providers_btn = QPushButton("Disable selected providers")
-        disable_providers_btn.clicked.connect(self._on_disable_providers)
-        btn_layout.addWidget(disable_providers_btn)
-
-        ignore_btn = QPushButton("Ignore and close")
-        ignore_btn.clicked.connect(self._on_ignore_and_close)
-        btn_layout.addWidget(ignore_btn)
-
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
-
-        main_layout.addLayout(btn_layout)
-
-    def _gather_selected_providers(self):
-        res = []
-        for i in range(self.provider_list.count()):
-            item = self.provider_list.item(i)
-            if item.checkState() == Qt.Checked:
-                res.append(item.data(Qt.UserRole))
-        return res
-
-    def _on_rollback(self):
-        # Rollback to disabling the newly enabled mod
-        self._action = "rollback"
+        for item in selected_items:
+            mod1, mod2 = item.data(0, Qt.UserRole)
+            add_ignored_conflict(mod1, mod2)
+            add_ignored_conflict(mod2, mod1) # Add the reverse pair too
+        
         self.accept()
-
-    def _on_disable_providers(self):
-        # Disable provider mods selected in the checklist
-        self._action = "disable_providers"
-        self._selected_providers = self._gather_selected_providers()
-        self.accept()
-
-    def _on_ignore_and_close(self):
-        # Add the selected providers to the ignore list for this mod
-        self._action = "ignore"
-        self._selected_providers = self._gather_selected_providers()
-        self.accept()
-
-    def get_action(self):
-        return getattr(self, '_action', None)
-
-    def get_selected_providers(self):
-        return getattr(self, '_selected_providers', [])
-
-    def get_ignored(self):
-        res = []
-        for i in range(self.provider_list.count()):
-            item = self.provider_list.item(i)
-            if item.checkState() == Qt.Checked:
-                res.append(item.data(Qt.UserRole))
-        return res

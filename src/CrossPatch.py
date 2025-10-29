@@ -976,10 +976,6 @@ class CrossPatchWindow(QMainWindow):
             if self._is_closing:
                 return
 
-            # Re-enable mods based on the new priority list (this includes UI-blocking PakBatchProcessor if any)
-            enabled_mods = self.profile_manager.get_active_profile().get("enabled_mods", {})
-            Util.enable_mods_from_priority(new_priority_list, enabled_mods, self.cfg, self, self.profile_manager.get_active_profile())
-
             # Update treeview (UI)
             self._update_treeview(preserve_selection=False)
 
@@ -987,11 +983,6 @@ class CrossPatchWindow(QMainWindow):
             threading.Thread(target=lambda: self.check_all_mod_updates(), daemon=True).start()
 
             # Show conflict dialog (UI)
-            if conflicts:
-                dialog = ConflictDialog(self, self.profile_manager.get_active_profile_name(), conflicts)
-                dialog.exec()
-                self._update_treeview(preserve_selection=False) # Refresh treeview if conflict dialog made changes
-
             # Handle launch success/failure message if this was a launch operation
             if is_launch_operation and not launch_success:
                 QMessageBox.warning(self, "Launch Failed", "Could not issue the command to launch the game.")
@@ -1002,6 +993,14 @@ class CrossPatchWindow(QMainWindow):
             self.launch_btn.setEnabled(True)
             self.status_label.setText(f"CrossPatch {APP_VERSION}")
             print("Mod processing and UI update finished.")
+
+            # This is the final step after all background work is done.
+            # This will handle enabling all mods, including showing the batch processor dialog.
+            enabled_mods = self.profile_manager.get_active_profile().get("enabled_mods", {})
+            Util.enable_mods_from_priority(new_priority_list, enabled_mods, self.cfg, self, self.profile_manager.get_active_profile())
+            
+            # Refresh the treeview one last time in case the conflict dialog caused changes.
+            self._update_treeview(preserve_selection=False)
     def add_mod_from_url(self, item_data=None):
         if not item_data:
             url, ok = QInputDialog.getText(self, "Add Mod from URL", "Enter the GameBanana Mod URL:")

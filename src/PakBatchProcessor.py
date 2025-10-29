@@ -8,6 +8,7 @@ import threading
 from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar
 from PySide6.QtCore import Qt, Signal, QObject
 import PakInspector
+from ConflictDialog import ConflictDialog
 
 class BatchProcessSignals(QObject):
     """Signals for batch processing operations."""
@@ -15,6 +16,7 @@ class BatchProcessSignals(QObject):
     progress_text = Signal(str)  # status message
     finished = Signal(dict)  # results dictionary
     error = Signal(str)  # error message
+    conflicts_found = Signal(dict) # conflicts dictionary
 
 class BatchProgressDialog(QDialog):
     """Dialog to show batch processing progress."""
@@ -70,6 +72,7 @@ class PakBatchProcessor:
             try:
                 total_mods = len(mod_list)
                 results = {"successful": [], "failed": []}
+                all_conflicts = {}
                 pak_dst = self._get_pak_dst()
 
                 for i, mod in enumerate(mod_list):
@@ -87,6 +90,12 @@ class PakBatchProcessor:
                         self.signals.progress_text.emit(status)
 
                         if is_enabled:
+                            # Perform conflict check before enabling
+                            mod_conflicts = self._check_conflicts_for_mod(mod_name, mod_list)
+                            if mod_conflicts:
+                                for file, providers in mod_conflicts.items():
+                                    all_conflicts.setdefault(file, set()).update(providers)
+
                             self._enable_mod(mod_name, priority, pak_dst)
                         else:
                             self._disable_mod(mod_name, pak_dst)
@@ -96,6 +105,9 @@ class PakBatchProcessor:
                     except Exception as e:
                         results["failed"].append({"name": mod_name, "error": str(e)})
 
+                # After processing, if there are any conflicts, show the dialog
+                if all_conflicts:
+                    self.signals.conflicts_found.emit({k: list(v) for k, v in all_conflicts.items()})
                 self.signals.progress.emit(100)
                 self.signals.progress_text.emit("Operation complete")
                 self.signals.finished.emit(results)
@@ -107,6 +119,11 @@ class PakBatchProcessor:
         self.signals.progress.connect(dialog.update_progress)
         self.signals.progress_text.connect(dialog.update_text)
         self.signals.finished.connect(dialog.accept)
+        
+        # Connect the new conflicts signal to a handler that can show the dialog
+        def show_conflict_dialog(conflicts):
+            ConflictDialog(parent_window, "Multiple Mods", conflicts).exec()
+        self.signals.conflicts_found.connect(show_conflict_dialog)
         self.signals.error.connect(dialog.accept)
 
         # Start worker thread
@@ -187,3 +204,47 @@ class PakBatchProcessor:
                 folder_path = os.path.join(pak_dst, item)
                 if os.path.isdir(folder_path):
                     shutil.rmtree(folder_path, ignore_errors=True)
+
+    def _check_conflicts_for_mod(self, mod_name_to_check: str, all_mods_list: List[Dict]) -> Dict:
+        """
+        Checks a single mod for conflicts against all other enabled mods in the list.
+        This is a simplified version of Util.check_mod_conflicts, adapted for the batch processor.
+        """
+        import Util # Local import
+        conflicts = {}
+        mods_folder = self.cfg["mods_folder"]
+
+        # Get info for the mod we are checking
+        mod_path_to_check = os.path.join(mods_folder, mod_name_to_check)
+        mod_info_to_check = Util.read_mod_info(mod_path_to_check)
+        if not mod_info_to_check.get("pak_data"):
+            return {} # No data to check against
+
+        # Build a set of files provided by the mod being checked
+        this_mod_files = {}
+        active_paks = Util.get_active_pak_files(mod_path_to_check, mod_info_to_check, self.profile_data)
+        for pak in mod_info_to_check.get("pak_data", {}).get("pak_files", []):
+            pak_path = pak.get("file_path", "")
+            pak_name = pak.get("file_name") or os.path.basename(pak_path)
+            if active_paks is not None and not any(pak_path.endswith(p) for p in active_paks):
+                continue
+            for file_path in pak.get("files", []):
+                this_mod_files[file_path] = pak_name
+
+        # Compare against other enabled mods in the batch
+        for other_mod_item in all_mods_list:
+            other_mod_name = other_mod_item["name"]
+            if other_mod_name == mod_name_to_check or not other_mod_item.get("enabled"):
+                continue
+
+            # Use the same conflict check logic from Util
+            other_conflicts = Util.check_mod_conflicts(
+                mod_name_to_check, mod_info_to_check, self.cfg, self.profile_data, active_paks
+            )
+
+            if other_conflicts:
+                for file, providers in other_conflicts.items():
+                    # The result from check_mod_conflicts is already structured as (mod, pak) tuples
+                    conflicts.setdefault(file, set()).update(providers)
+
+        return conflicts

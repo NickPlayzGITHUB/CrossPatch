@@ -890,54 +890,6 @@ def enable_mod(mod_name, cfg, priority, profile_data):
         except Exception as e:
             print(f"Warning: Could not analyze pak files for {mod_name}: {e}")
 
-    # Check for conflicts with other enabled mods
-    active_paks = get_active_pak_files(mod_path, mod_info, profile_data)
-    conflicts = check_mod_conflicts(mod_name, mod_info, cfg, profile_data, active_paks)
-    if conflicts:
-        # Build a concise list of provider pak files involved in the conflicts.
-        # We will present a compact dialog allowing the user to suppress reminders
-        # for specific provider mods.
-        providers_map = {}  # provider_mod -> set of pak names
-        for fp, provs in conflicts.items():
-            for prov_mod, prov_pak in provs:
-                # provs contains tuples (provider_mod, pak_name) and (this_mod, pak_name)
-                if prov_mod == mod_name:
-                    # skip the current mod as a provider in the list
-                    continue
-                providers_map.setdefault(prov_mod, set()).add(prov_pak)
-
-        # Prepare a compact UI dialog listing provider mods and their pak files.
-        from ConflictDialog import ConflictDialog
-        dialog = ConflictDialog(None, mod_name, conflicts)
-        if dialog.exec():
-            action = dialog.get_action()
-            selected = dialog.get_selected_providers()
-            # Handle actions: "ignore" (add to ignore list),
-            # "disable_providers" (disable selected provider mods),
-            # "rollback" (disable the newly enabled mod)
-            if action == "ignore":
-                for provider_mod in selected:
-                    add_ignored_conflict(mod_name, provider_mod)
-            elif action == "disable_providers":
-                for provider_mod in selected:
-                    try:
-                        profile_data["enabled_mods"][provider_mod] = False
-                    except Exception:
-                        pass
-                    try:
-                        remove_mod_from_game_folders(provider_mod, cfg)
-                    except Exception:
-                        pass
-            elif action == "rollback":
-                try:
-                    profile_data["enabled_mods"][mod_name] = False
-                except Exception:
-                    pass
-                try:
-                    remove_mod_from_game_folders(mod_name, cfg)
-                except Exception:
-                    pass
-
     src = mod_path
     if mod_type == "ue4ss-script":
         dst = os.path.join(cfg["ue4ss_mods_folder"], mod_name)
@@ -952,8 +904,7 @@ def enable_mod(mod_name, cfg, priority, profile_data):
         # For Logic mods, copy the contents directly. They are removed entirely on disable.
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
     else: # Default to pak mod behavior
-        # Pak mod installation is now handled by the PakBatchProcessor to avoid UI blocking.
-        # This function only handles non-pak mods now.
+        # Pak mod installation is handled by PakBatchProcessor. This function only handles non-pak mods.
         pass
 
 
@@ -979,10 +930,6 @@ def enable_mod_with_ui_pyside(mod_name, cfg, priority, root_window, profile_data
             start_background_parse(root_window, mod_path, mod_name, cfg, profile_data)
         except Exception as e:
             print(f"Warning: Could not start background parse for {mod_name}: {e}")
-
-    print(f"Enabling {mod_name} (type: {mod_type}) with priority {priority}")
-    enable_mod(mod_name, cfg, priority, profile_data)
-
 
 def _parse_pak_with_progress(parent, mod_path, mod_name):
     """Run PakInspector.generate_mod_pak_manifest in a background thread while
@@ -1128,27 +1075,31 @@ def enable_mods_from_priority(priority_list, enabled_mods_dict, cfg, root_window
     from PakBatchProcessor import PakBatchProcessor
 
     # Create lists to track pak mods and other mods separately
-    pak_mods = []
+    pak_mods_to_process = []
     enabled_pak_mod_count = 0
     
-    # First pass: Build list of mods to process
+    # First pass: Handle non-pak mods immediately and build list of pak mods for batching
     for mod_name in priority_list:
         if enabled_mods_dict.get(mod_name, False):
             mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
             mod_type = mod_info.get("mod_type", "pak")
             
             if mod_type == "pak":
-                pak_mods.append({
+                pak_mods_to_process.append({
                     "name": mod_name,
                     "enabled": True,
                     "priority": enabled_pak_mod_count
                 })
                 enabled_pak_mod_count += 1
+            else:
+                # Handle non-pak mods directly as they are quick and don't need batching
+                enable_mod_with_ui_pyside(mod_name, cfg, 0, root_window, profile_data)
 
     # Initialize batch processor and process pak mods
-    if pak_mods:
+    if pak_mods_to_process:
         batch_processor = PakBatchProcessor(cfg, profile_data)
-        batch_processor.process_mods_batch(root_window, pak_mods)
+        # This call will block until the batch processing (including any dialogs) is complete
+        batch_processor.process_mods_batch(root_window, pak_mods_to_process)
 
 def extract_archive(archive_path, dest_path, progress_signal=None, clean_destination=True, finished_signal=None):
     """
