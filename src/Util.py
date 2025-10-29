@@ -27,6 +27,9 @@ IGNORED_CONFLICTS_PATH = os.path.join(CONFIG_DIR, "ignored_conflicts.json")
 _READ_MOD_INFO_CACHE = {}
 _BACKGROUND_PARSES = {}
 
+# Flag to ensure the GB 403 error is only shown once per session.
+_GB_403_ERROR_SHOWN = False
+
 
 def load_ignored_conflicts():
     try:
@@ -189,6 +192,16 @@ def _gb_request(url, params=None, referer=None, timeout=10):
 
     # Try a single request; callers can retry if desired
     resp = session.get(url, params=params, timeout=timeout)
+    
+    global _GB_403_ERROR_SHOWN
+    if resp.status_code == 403:
+        if not _GB_403_ERROR_SHOWN:
+            _GB_403_ERROR_SHOWN = True
+            raise ConnectionError(
+                "GameBanana's API returned a 403 Forbidden error. "
+                "This usually means their servers are temporarily blocking requests. "
+                "This is not an issue with CrossPatch. Please try again in a few minutes."
+            )
     resp.raise_for_status()
     return resp
 
@@ -276,12 +289,12 @@ def get_gb_mod_version(mod_page_url):
     api_item_type = item_type.rstrip('s').capitalize()
     api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sVersion"
     
-    headers = {'User-Agent': f'CrossPatch/{APP_VERSION}', 'Accept': 'application/json'}
-    response = requests.get(api_url, headers={'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'}, timeout=10)
-    response.raise_for_status()
-    
-    item_data = response.json()
-    return item_data.get("_sVersion")
+    try:
+        resp = _gb_request(api_url)
+        item_data = resp.json()
+        return item_data.get("_sVersion")
+    except requests.RequestException as e:
+        raise ConnectionError(f"Could not get mod version from GameBanana API: {e}")
 
 def get_gb_mod_list(game_id, sort='default', page=1, search_query=None, category_id=None):
     """
@@ -304,19 +317,12 @@ def get_gb_mod_list(game_id, sort='default', page=1, search_query=None, category
     if category_id:
         params['_idCategory'] = category_id
 
-    headers = {'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'}
     print(f"[DEBUG] Fetching GB mod list. URL: {base_url}, Params: {params}")
 
     try:
-        # Using a prepared request to easily log the full URL
-        req = requests.Request('GET', base_url, params=params, headers={'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'})
-        prepared = req.prepare()
-        print(f"[DEBUG] Full request URL: {prepared.url}")
-
-        response = requests.get(base_url, params=params, headers=headers, timeout=15)
-        print(f"[DEBUG] GB API Response Status: {response.status_code}")
-        response.raise_for_status()
-        data = response.json()
+        resp = _gb_request(base_url, params=params, timeout=15)
+        print(f"[DEBUG] GB API Response Status: {resp.status_code}")
+        data = resp.json()
         print(f"[DEBUG] GB API Response JSON: {json.dumps(data, indent=2)}")
         return data.get('_aRecords', []), data.get('_aMetadata', {})
     except requests.RequestException as e:
@@ -329,14 +335,12 @@ def get_gb_top_mods(game_id, page=1):
         '_nPage': page,
         '_csvProperties': '_sName,_sProfileUrl,_nLikeCount,_nViewCount,_nTotalDownloads,_aSubmitter,_aPreviewMedia,_aFiles'
     }
-    headers = {'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'}
     print(f"[DEBUG] Fetching GB Top mods. URL: {base_url}, Params: {params}")
     try:
-        response = requests.get(base_url, params=params, headers=headers, timeout=15)
-        response.raise_for_status()
+        resp = _gb_request(base_url, params=params, timeout=15)
         # This endpoint returns a simple list. We return it and a basic metadata object.
         # The caller will know this endpoint doesn't support pagination.
-        return response.json(), {'_bIsComplete': True}
+        return resp.json(), {'_bIsComplete': True}
     except requests.RequestException as e:
         raise ConnectionError(f"Could not connect to GameBanana TopSubs API: {e}")
 
@@ -348,12 +352,10 @@ def get_gb_featured_mods(game_id, page=1):
         '_idGameRow': game_id,
         '_csvProperties': '_sName,_sProfileUrl,_nLikeCount,_nViewCount,_nTotalDownloads,_aSubmitter,_aPreviewMedia,_aFiles'
     }
-    headers = {'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'}
     print(f"[DEBUG] Fetching GB Featured mods. URL: {base_url}, Params: {params}")
     try:
-        response = requests.get(base_url, params=params, headers=headers, timeout=15)
-        response.raise_for_status()
-        data = response.json()
+        resp = _gb_request(base_url, params=params, timeout=15)
+        data = resp.json()
         # This endpoint returns a dictionary with _aRecords and _aMetadata.
         # We return both for the caller to handle pagination.
         return data.get('_aRecords', []), data.get('_aMetadata', {})
@@ -367,13 +369,11 @@ def get_gb_spotlight_mods(game_id, page=1):
         '_nPage': page,
         '_csvProperties': '_sName,_sProfileUrl,_nLikeCount,_nViewCount,_nTotalDownloads,_aSubmitter,_aPreviewMedia,_aFiles'
     }
-    headers = {'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'}
     print(f"[DEBUG] Fetching GB Spotlight mods. URL: {base_url}, Params: {params}")
     try:
-        response = requests.get(base_url, params=params, headers=headers, timeout=15)
-        response.raise_for_status()
+        resp = _gb_request(base_url, params=params, timeout=15)
         # This endpoint returns a dict with a single key (e.g., "Mod") containing the list.
-        data = response.json()
+        data = resp.json()
         # The response is a dict with a single key (e.g., "Mod") containing the list
         if isinstance(data, dict) and len(data) == 1:
             return list(data.values())[0]
