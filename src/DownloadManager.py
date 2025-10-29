@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar, QMessa
 from PySide6.QtCore import Signal, QObject, Qt, QTimer
 
 import Util
-from Constants import APP_VERSION
+from Constants import APP_VERSION, BROWSER_USER_AGENT
 import PakInspector
 
 # --- Handle optional archive dependencies ---
@@ -177,7 +177,7 @@ class DownloadManager:
         try:
             api_item_type = item_type.capitalize()
             api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles"
-            response = requests.get(api_url, headers={'User-Agent': f'CrossPatch/{APP_VERSION}'})
+            response = requests.get(api_url, headers={'User-Agent': BROWSER_USER_AGENT})
             response.raise_for_status()
             item_data = response.json()
             item_name = item_data.get('_sName', f"mod_{item_id}").replace(" ", "")
@@ -221,7 +221,7 @@ class DownloadManager:
                 self.signals.finished.emit()
 
     def _download_file_with_progress(self, url, destination_path):
-        with requests.get(url, stream=True, headers={'User-Agent': f'CrossPatch/{APP_VERSION}'}) as r:
+        with requests.get(url, stream=True, headers={'User-Agent': BROWSER_USER_AGENT}) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))
             bytes_downloaded = 0

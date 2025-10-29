@@ -14,7 +14,8 @@ from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox, QDialog, QLabel, QVBoxLayout, QProgressBar
 
 from Constants import UPDATE_URL, APP_VERSION, STEAM_APP_ID
-from Config import CONFIG_DIR
+from Constants import BROWSER_USER_AGENT # Import the new constant
+from Config import CONFIG_DIR 
 import PakInspector
 
 # File storing user-suppressed conflict reminders. Keys are tuples stored as
@@ -170,14 +171,38 @@ def get_gb_item_name(item_type, item_id):
     if not item_type or not item_id:
         raise ValueError("Invalid item type or ID provided.")
 
+
+def _gb_request(url, params=None, referer=None, timeout=10):
+    """Helper to perform a GET request against the GameBanana API using
+    browser-like headers to reduce chance of being blocked (403).
+
+    Returns the requests.Response on success or raises requests.RequestException.
+    """
+    headers = {
+        'User-Agent': BROWSER_USER_AGENT,
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+        # Use a referer when available to mimic browser navigation
+        'Referer': referer or 'https://gamebanana.com',
+        'Origin': 'https://gamebanana.com'
+    }
+
+    session = requests.Session()
+    # Attach headers to session for consistent requests
+    session.headers.update(headers)
+
+    # Try a single request; callers can retry if desired
+    resp = session.get(url, params=params, timeout=timeout)
+    resp.raise_for_status()
+    return resp
+
     # API expects singular, capitalized type (e.g., "Mod", "Sound")
     api_item_type = item_type.rstrip('s').capitalize()
     api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName"
     
     try:
-        response = requests.get(api_url, headers={'User-Agent': f'CrossPatch/{APP_VERSION}'}, timeout=5)
-        response.raise_for_status()
-        item_data = response.json()
+        resp = _gb_request(api_url)
+        item_data = resp.json()
         name = item_data.get('_sName')
         if not name:
             raise ValueError("Could not find item name in API response.")
@@ -206,9 +231,9 @@ def get_gb_item_data_from_url(url):
     api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles,_sDescription,_sText,_aPreviewMedia"
     
     try:
-        response = requests.get(api_url, headers={'User-Agent': f'CrossPatch/{APP_VERSION}'}, timeout=10)
-        response.raise_for_status()
-        return response.json()
+        # Use the page URL as the Referer to more closely emulate a browser
+        resp = _gb_request(api_url, referer=url)
+        return resp.json()
     except requests.RequestException as e:
         raise ConnectionError(f"Could not connect to GameBanana API: {e}")
     except json.JSONDecodeError as e:
@@ -227,9 +252,8 @@ def get_gb_item_data_by_id(item_type, item_id):
     api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sName,_aFiles,_sDescription,_sText,_aPreviewMedia"
     
     try:
-        response = requests.get(api_url, headers={'User-Agent': f'CrossPatch/{APP_VERSION}'}, timeout=10)
-        response.raise_for_status()
-        return response.json()
+        resp = _gb_request(api_url)
+        return resp.json()
     except requests.RequestException as e:
         raise ConnectionError(f"Could not connect to GameBanana API: {e}")
     except json.JSONDecodeError as e:
@@ -257,7 +281,7 @@ def get_gb_mod_version(mod_page_url):
     api_url = f"https://gamebanana.com/apiv11/{api_item_type}/{item_id}?_csvProperties=_sVersion"
     
     headers = {'User-Agent': f'CrossPatch/{APP_VERSION}', 'Accept': 'application/json'}
-    response = requests.get(api_url, headers=headers, timeout=10)
+    response = requests.get(api_url, headers={'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'}, timeout=10)
     response.raise_for_status()
     
     item_data = response.json()
@@ -284,12 +308,12 @@ def get_gb_mod_list(game_id, sort='default', page=1, search_query=None, category
     if category_id:
         params['_idCategory'] = category_id
 
-    headers = {'User-Agent': f'CrossPatch/{APP_VERSION}', 'Accept': 'application/json'}
+    headers = {'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'}
     print(f"[DEBUG] Fetching GB mod list. URL: {base_url}, Params: {params}")
 
     try:
         # Using a prepared request to easily log the full URL
-        req = requests.Request('GET', base_url, params=params, headers=headers)
+        req = requests.Request('GET', base_url, params=params, headers={'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'})
         prepared = req.prepare()
         print(f"[DEBUG] Full request URL: {prepared.url}")
 
@@ -309,7 +333,7 @@ def get_gb_top_mods(game_id, page=1):
         '_nPage': page,
         '_csvProperties': '_sName,_sProfileUrl,_nLikeCount,_nViewCount,_nTotalDownloads,_aSubmitter,_aPreviewMedia,_aFiles'
     }
-    headers = {'User-Agent': f'CrossPatch/{APP_VERSION}', 'Accept': 'application/json'}
+    headers = {'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'}
     print(f"[DEBUG] Fetching GB Top mods. URL: {base_url}, Params: {params}")
     try:
         response = requests.get(base_url, params=params, headers=headers, timeout=15)
@@ -328,7 +352,7 @@ def get_gb_featured_mods(game_id, page=1):
         '_idGameRow': game_id,
         '_csvProperties': '_sName,_sProfileUrl,_nLikeCount,_nViewCount,_nTotalDownloads,_aSubmitter,_aPreviewMedia,_aFiles'
     }
-    headers = {'User-Agent': f'CrossPatch/{APP_VERSION}', 'Accept': 'application/json'}
+    headers = {'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'}
     print(f"[DEBUG] Fetching GB Featured mods. URL: {base_url}, Params: {params}")
     try:
         response = requests.get(base_url, params=params, headers=headers, timeout=15)
@@ -347,7 +371,7 @@ def get_gb_spotlight_mods(game_id, page=1):
         '_nPage': page,
         '_csvProperties': '_sName,_sProfileUrl,_nLikeCount,_nViewCount,_nTotalDownloads,_aSubmitter,_aPreviewMedia,_aFiles'
     }
-    headers = {'User-Agent': f'CrossPatch/{APP_VERSION}', 'Accept': 'application/json'}
+    headers = {'User-Agent': BROWSER_USER_AGENT, 'Accept': 'application/json'}
     print(f"[DEBUG] Fetching GB Spotlight mods. URL: {base_url}, Params: {params}")
     try:
         response = requests.get(base_url, params=params, headers=headers, timeout=15)
@@ -533,6 +557,38 @@ def discover_mod_configuration(mod_path):
     return discovered_config if discovered_config else None
 
 
+def has_file_based_configuration_quick(mod_path: str) -> bool:
+    """Quick check whether a mod folder likely contains file-based configuration.
+
+    This performs a shallow scan: for each immediate subdirectory (category),
+    it checks whether there are at least two child directories that contain a
+    'desc.ini' file. The function returns True as soon as one valid category
+    is found. This is much faster than performing a full discovery because it
+    stops early and avoids parsing INI files.
+    """
+    try:
+        if not os.path.isdir(mod_path):
+            return False
+
+        for category_name in os.listdir(mod_path):
+            category_path = os.path.join(mod_path, category_name)
+            if not os.path.isdir(category_path):
+                continue
+
+            valid_options = 0
+            for option_name in os.listdir(category_path):
+                option_path = os.path.join(category_path, option_name)
+                if not os.path.isdir(option_path):
+                    continue
+                if os.path.exists(os.path.join(option_path, 'desc.ini')):
+                    valid_options += 1
+                    if valid_options >= 2:
+                        return True
+        return False
+    except Exception:
+        return False
+
+
 def _apply_mod_configuration(mod_install_path, mod_info, profile_data):
     """Renames files within an installed mod folder based on configuration."""
     config = mod_info.get("configuration")
@@ -672,13 +728,19 @@ def remove_mod_from_game_folders(mod_name, cfg):
             shutil.rmtree(ue4ss_logic_path)
 
 def launch_game():
-    if platform.system() == "Windows":
-        print(
-            f"Attempting to launch Sonic Racing CrossWorlds...")  # Removed the EXE check since too many people were having issues, idk why that was even a thing after I made the game launch from steam instead of the exe
-        webbrowser.open(f"steam://run/{STEAM_APP_ID}")
-    elif platform.system() == "Linux":
-        subprocess.Popen(["steam", f"steam://rungameid/{STEAM_APP_ID}"])
-    print("Opening Crossworlds...")
+    """Launches the game via Steam protocol and returns True on success."""
+    try:
+        if platform.system() == "Windows":
+            print("Attempting to launch Sonic Racing CrossWorlds via Steam (Windows)...")
+            # webbrowser.open is simple but doesn't give feedback on success
+            os.startfile(f"steam://run/{STEAM_APP_ID}")
+        elif platform.system() == "Linux":
+            print("Attempting to launch Sonic Racing CrossWorlds via Steam (Linux)...")
+            subprocess.Popen(["steam", f"steam://rungameid/{STEAM_APP_ID}"])
+        return True
+    except Exception as e:
+        print(f"Failed to launch game: {e}")
+        return False
 
 
 def _ensure_ue4ss_installed(cfg, root_window):

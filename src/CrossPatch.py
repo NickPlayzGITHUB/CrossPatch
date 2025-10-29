@@ -50,7 +50,7 @@ class ImageLoader(QRunnable):
     def run(self):
         """Downloads an image and emits it as a QPixmap."""
         try:
-            response = requests.get(self.url, timeout=10)
+            response = requests.get(self.url, headers={'User-Agent': Util.BROWSER_USER_AGENT}, timeout=10)
             response.raise_for_status()
             image = QImage()
             image.loadFromData(response.content)
@@ -245,6 +245,8 @@ class CrossPatchWindow(QMainWindow):
     protocol_url_received = Signal(str)
     # Signal to safely update UI after background mod update check
     mod_update_check_finished = Signal(dict, bool)
+    # Signal to trigger UI update after background mod processing (refresh/launch)
+    mod_processing_finished = Signal(list, dict, bool, bool) # (new_priority_list, conflicts, launch_success, is_launch_operation)
     # Signal for app update check
     update_check_finished = Signal(str, dict)
 
@@ -310,6 +312,7 @@ class CrossPatchWindow(QMainWindow):
         self.notebook.currentChanged.connect(self.on_tab_change)
         self.protocol_url_received.connect(self.handle_protocol_url)
         self.mod_update_check_finished.connect(self.on_mod_update_check_finished)
+        self.mod_processing_finished.connect(self._on_mod_processing_finished)
         self.update_check_finished.connect(self.on_app_update_check_finished)
         if self.instance_socket:
             threading.Thread(target=self._socket_listener, daemon=True).start()
@@ -552,7 +555,10 @@ class CrossPatchWindow(QMainWindow):
         self.search_btn.setCheckable(True)
         self.search_btn.toggled.connect(self.toggle_search_bar)
         bottom_button_layout.addWidget(self.search_btn)
-
+        
+        # The bottom_button_layout is already the layout for self.bottom_button_frame.
+        # Adding it directly to centralWidget's layout would cause QLayout::addChildLayout warning.
+        # Only add the frame itself.
         self.centralWidget().layout().addWidget(self.bottom_button_frame)
 
         # --- Launch Button ---
@@ -562,7 +568,8 @@ class CrossPatchWindow(QMainWindow):
         font = launch_btn.font()
         font.setPointSize(12)
         launch_btn.setFont(font)
-        self.centralWidget().layout().addWidget(launch_btn)
+        self.launch_btn = launch_btn # Store as instance variable
+        self.centralWidget().layout().addWidget(self.launch_btn)
 
         # --- Status Bar ---
         # Changed it to a label cause I couldn't figure out how to center the text, might be a skill issue
@@ -570,8 +577,8 @@ class CrossPatchWindow(QMainWindow):
         status_widget = QWidget()
         status_layout = QHBoxLayout(status_widget)
         status_layout.setContentsMargins(0, 0, 0, 0)
-        version_label = QLabel(f"CrossPatch {APP_VERSION}")
-        status_layout.addWidget(version_label, alignment=Qt.AlignCenter)
+        self.status_label = QLabel(f"CrossPatch {APP_VERSION}")
+        status_layout.addWidget(self.status_label, alignment=Qt.AlignCenter)
         
         status_bar.addWidget(status_widget, 1)
 
@@ -771,30 +778,45 @@ class CrossPatchWindow(QMainWindow):
 
     # --- Core Application Logic (Ported from Tkinter version) ---
 
-    def refresh(self):
+    def _perform_mod_processing_background_task(self, current_priority_from_main_thread):
+        """
+        Performs the non-UI, long-running parts of mod processing in a background thread.
+        Returns data needed for subsequent UI updates.
+        """
         all_mods = Util.list_mod_folders(self.cfg["mods_folder"])
-        
-        # Get the current visual order from the tree as the source of truth
-        current_priority = [self.tree.topLevelItem(i).data(0, Qt.UserRole) for i in range(self.tree.topLevelItemCount())]
-        
-        # Synchronize with disk (add new mods, remove deleted ones)
-        new_priority_list = Util.synchronize_priority_with_disk(current_priority, all_mods)
-        self.profile_manager.set_mod_priority(new_priority_list)
+        new_priority_list = Util.synchronize_priority_with_disk(current_priority_from_main_thread, all_mods)
+        self.profile_manager.set_mod_priority(new_priority_list) # This is a backend operation, safe in background
 
         Util.clean_mods_folder(self.cfg)
-        enabled_mods = self.profile_manager.get_active_profile().get("enabled_mods", {})
-        Util.enable_mods_from_priority(new_priority_list, enabled_mods, self.cfg, self, self.profile_manager.get_active_profile())
-
-        threading.Thread(target=lambda: self.check_all_mod_updates(), daemon=True).start()
-
-        # A manual refresh should clear the selection for a clean state.
-        self._update_treeview(preserve_selection=False)
-        print("Saved and refreshed.")
-
+        
         conflicts = self.detect_mod_conflicts()
-        if conflicts:
-            dialog = ConflictDialog(self, conflicts)
-            dialog.exec()
+        return new_priority_list, conflicts
+
+    def refresh(self):
+        """
+        Initiates a refresh operation. The long-running parts are offloaded to a background thread.
+        UI updates are handled by _on_mod_processing_finished.
+        """
+        self.launch_btn.setEnabled(False) # Disable UI during refresh
+        self.status_label.setText("Refreshing mods...")
+
+        # Capture current_priority on the main thread before starting the worker
+        current_priority = [self.tree.topLevelItem(i).data(0, Qt.UserRole) for i in range(self.tree.topLevelItemCount())]
+
+        # Start background worker for the non-UI parts of refresh
+        threading.Thread(target=self._refresh_worker, args=(current_priority,), daemon=True).start()
+
+    def _refresh_worker(self, current_priority_from_main_thread):
+        """Worker for the refresh button, performs background tasks."""
+        try:
+            new_priority_list, conflicts = self._perform_mod_processing_background_task(current_priority_from_main_thread)
+            # Emit signal to main thread for UI updates
+            self.mod_processing_finished.emit(new_priority_list, conflicts, True, False) # launch_success=True, is_launch_operation=False
+        except Exception as e:
+            print(f"Error during refresh worker: {e}")
+            QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Error", f"An error occurred during refresh: {e}"))
+            QTimer.singleShot(0, lambda: (self.launch_btn.setEnabled(True), self.status_label.setText(f"CrossPatch {APP_VERSION}")))
+
     def _tree_mouse_press_event(self, event):
         """Clears selection when clicking on an empty area of the tree."""
         item = self.tree.itemAt(event.pos())
@@ -870,10 +892,17 @@ class CrossPatchWindow(QMainWindow):
                 author = info.get("author", "Unknown")
                 mod_type = info.get("mod_type", "pak").upper()
                 # Check for file-based config OR json-based config
-                # Avoid expensive filesystem scans during browse rendering: only use
-                # saved 'configuration' from info.json. Full discovery is performed
-                # when the user opens the Configure dialog.
+                # Use a lightweight quick-check for file-based configuration so
+                # the UI can show the config icon without performing a full
+                # discovery scan (keeps browse rendering snappy).
                 has_config = "configuration" in info
+                if not has_config:
+                    try:
+                        mod_path = os.path.join(self.cfg["mods_folder"], mod_folder_name)
+                        if Util.has_file_based_configuration_quick(mod_path):
+                            has_config = True
+                    except Exception:
+                        pass
                 is_enabled = enabled_mods_map.get(mod_folder_name, False)
 
                 item = QTreeWidgetItem(["", "", name, version, author, mod_type, ""])
@@ -910,9 +939,64 @@ class CrossPatchWindow(QMainWindow):
         self.refresh()
 
     def save_and_launch(self):
-        self.refresh()
-        Util.launch_game()
-    
+        """
+        Saves changes and launches the game.
+        The long-running parts are offloaded to a background thread.
+        UI updates are handled by _on_mod_processing_finished.
+        """
+        self.launch_btn.setEnabled(False)
+        self.status_label.setText("Applying mods and launching...")
+        
+        # Capture current_priority on the main thread before starting the worker
+        current_priority = [self.tree.topLevelItem(i).data(0, Qt.UserRole) for i in range(self.tree.topLevelItemCount())]
+
+        # Start background worker for mod processing and game launch
+        threading.Thread(target=self._save_and_launch_worker, args=(current_priority,), daemon=True).start()
+
+    def _save_and_launch_worker(self, current_priority_from_main_thread):
+        """Worker for save_and_launch, performs background tasks and launches game."""
+        try:
+            new_priority_list, conflicts = self._perform_mod_processing_background_task(current_priority_from_main_thread)
+            launch_success = Util.launch_game()
+            # Emit signal to main thread for UI updates
+            self.mod_processing_finished.emit(new_priority_list, conflicts, launch_success, True)
+        except Exception as e:
+            print(f"Error during save and launch worker: {e}")
+            QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Error", f"An error occurred during mod processing or launch: {e}"))
+            QTimer.singleShot(0, lambda: (self.launch_btn.setEnabled(True), self.status_label.setText(f"CrossPatch {APP_VERSION}")))
+
+    def _on_mod_processing_finished(self, new_priority_list, conflicts, launch_success, is_launch_operation):
+        """
+        Slot connected to mod_processing_finished signal.
+        Performs all UI updates on the main thread after background processing.
+        """
+        try:
+            # Re-enable mods based on the new priority list (this includes UI-blocking PakBatchProcessor if any)
+            enabled_mods = self.profile_manager.get_active_profile().get("enabled_mods", {})
+            Util.enable_mods_from_priority(new_priority_list, enabled_mods, self.cfg, self, self.profile_manager.get_active_profile())
+
+            # Update treeview (UI)
+            self._update_treeview(preserve_selection=False)
+
+            # Check for mod updates (starts new background thread)
+            threading.Thread(target=lambda: self.check_all_mod_updates(), daemon=True).start()
+
+            # Show conflict dialog (UI)
+            if conflicts:
+                dialog = ConflictDialog(self, self.profile_manager.get_active_profile_name(), conflicts)
+                dialog.exec()
+                self._update_treeview(preserve_selection=False) # Refresh treeview if conflict dialog made changes
+
+            # Handle launch success/failure message if this was a launch operation
+            if is_launch_operation and not launch_success:
+                QMessageBox.warning(self, "Launch Failed", "Could not issue the command to launch the game.")
+        except Exception as e:
+            print(f"Error during main thread UI update after mod processing: {e}")
+            QMessageBox.critical(self, "Error", f"An error occurred during UI update: {e}")
+        finally:
+            self.launch_btn.setEnabled(True)
+            self.status_label.setText(f"CrossPatch {APP_VERSION}")
+            print("Mod processing and UI update finished.")
     def add_mod_from_url(self, item_data=None):
         if not item_data:
             url, ok = QInputDialog.getText(self, "Add Mod from URL", "Enter the GameBanana Mod URL:")
