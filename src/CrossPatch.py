@@ -734,41 +734,61 @@ class CrossPatchWindow(QMainWindow):
         summary = QLabel(f"Files: {pak_data.get('total_files', 0)}  Total size: {pak_data.get('total_size', 0)} bytes")
         layout.addWidget(summary)
 
-        table = QTableWidget()
-        headers = ["Path", "Size", "Compressed", "Offset", "Archive", "Source"]
-        table.setColumnCount(len(headers))
-        table.setHorizontalHeaderLabels(headers)
+        tree = QTreeWidget()
+        headers = ["Name", "Size", "Compressed", "Offset", "Archive", "Source"]
+        tree.setColumnCount(len(headers))
+        tree.setHeaderLabels(headers)
+        header = tree.header()
+        header.setSectionResizeMode(0, QHeaderView.Interactive)
+        header.setStretchLastSection(False)
+        tree.setSortingEnabled(True)
 
-        rows = []
-        # Prefer detailed index if available
+        # Icons for tree items
+        folder_icon = self.style().standardIcon(QStyle.SP_DirIcon)
+        file_icon = self.style().standardIcon(QStyle.SP_FileIcon)
+
+        # A dictionary to keep track of tree items to avoid creating duplicates
+        # The key will be the full path of the node as a tuple (e.g., ('Content', 'Characters'))
+        # The value will be the QTreeWidgetItem
+        nodes = {}
+        root_item = tree.invisibleRootItem()
+
         if pak_data.get('files_index'):
             for e in pak_data['files_index']:
-                rows.append([
-                    e.get('path', ''),
-                    str(e.get('size', '')),
-                    str(e.get('compressed_size', '')),
-                    str(e.get('offset', '')),
-                    e.get('archive', ''),
-                    ''
-                ])
+                path_parts = e.get('path', '').replace('\\', '/').split('/')
+                parent_item = root_item
+
+                # Traverse the path components, creating folder nodes as needed
+                for i in range(len(path_parts)):
+                    current_path_tuple = tuple(path_parts[:i+1])
+                    
+                    if current_path_tuple in nodes:
+                        parent_item = nodes[current_path_tuple]
+                    else:
+                        node_text = path_parts[i]
+                        is_file = (i == len(path_parts) - 1)
+                        
+                        # Create the new item with its name in the first column
+                        new_item = QTreeWidgetItem([node_text])
+                        new_item.setIcon(0, file_icon if is_file else folder_icon)
+                        
+                        # If this is the file itself, populate the other columns
+                        if is_file:
+                            new_item.setText(1, str(e.get('size', '')))
+                            new_item.setText(2, str(e.get('compressed_size', '')))
+                            new_item.setText(3, str(e.get('offset', '')))
+                            new_item.setText(4, e.get('archive', ''))
+                        
+                        parent_item.addChild(new_item)
+                        nodes[current_path_tuple] = new_item
+                        parent_item = new_item
         else:
-            # Fallback to listing per pak file entries
-            for pak in pak_data.get('pak_files', []):
-                source = pak.get('file_name') or pak.get('file_path')
-                for f in pak.get('files', []):
-                    rows.append([f, '', '', '', '', source])
+            # Fallback for older pak_data format without a detailed index
+            tree.addTopLevelItem(QTreeWidgetItem(["Pak file index is not detailed enough to build a file tree."]))
 
-        table.setRowCount(len(rows))
-        for r, row in enumerate(rows):
-            for c, val in enumerate(row):
-                item = QTreeWidgetItem([str(val)]) if c == 0 else None
-                if c == 0:
-                    table.setItem(r, c, QTableWidgetItem(str(val)))
-                else:
-                    table.setItem(r, c, QTableWidgetItem(str(val)))
-
-        table.resizeColumnsToContents()
-        layout.addWidget(table)
+        for i in range(tree.columnCount()):
+            tree.resizeColumnToContents(i)
+        layout.addWidget(tree)
 
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dialog.accept)

@@ -148,6 +148,17 @@ class PakBatchProcessor:
         """Enable a mod by copying its pak files to the destination."""
         # First, ensure any old versions of this mod's folder are removed to guarantee a clean install.
         self._remove_mod_folders(pak_dst, mod_name)
+
+        # --- Generate pak_data manifest if it doesn't exist ---
+        # This ensures that conflict detection has the data it needs without
+        # having to manually view the contents first.
+        source_path = os.path.join(self.cfg["mods_folder"], mod_name)
+        try:
+            # This function is smart: it reads from info.json if data exists,
+            # otherwise it generates and saves it.
+            PakInspector.generate_mod_pak_manifest(source_path)
+        except Exception as e:
+            print(f"Warning: Could not generate pak manifest for {mod_name}: {e}")
         
         priority_prefix = str(priority).zfill(3)
         target_folder = f"{priority_prefix}.{mod_name}"
@@ -162,7 +173,6 @@ class PakBatchProcessor:
         os.makedirs(target_path, exist_ok=True)
 
         # Copy pak files from mod to target
-        source_path = os.path.join(self.cfg["mods_folder"], mod_name)
         self._copy_mod_files(source_path, target_path, mod_name)
 
     def _copy_mod_files(self, source_path: str, target_path: str, mod_name: str) -> None:
