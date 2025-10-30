@@ -226,7 +226,8 @@ class DownloadManager:
             total_size = int(r.headers.get('content-length', 0))
             bytes_downloaded = 0
             with open(destination_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
+                # Use a larger chunk size (e.g., 1MB) to improve download speed on good connections.
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
                     f.write(chunk)
                     bytes_downloaded += len(chunk)
                     if total_size > 0:
