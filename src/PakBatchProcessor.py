@@ -75,6 +75,9 @@ class PakBatchProcessor:
                 all_conflicts = {}
                 pak_dst = self._get_pak_dst()
 
+                # --- Absolute Cleanup: Remove all managed pak mod folders before processing ---
+                self._clean_all_managed_folders(pak_dst)
+
                 for i, mod in enumerate(mod_list):
                     if self._cancel_flag:
                         break
@@ -97,9 +100,6 @@ class PakBatchProcessor:
                                     all_conflicts.setdefault(file, set()).update(providers)
 
                             self._enable_mod(mod_name, priority, pak_dst)
-                        else:
-                            self._disable_mod(mod_name, pak_dst)
-
                         results["successful"].append(mod_name)
 
                     except Exception as e:
@@ -146,12 +146,15 @@ class PakBatchProcessor:
 
     def _enable_mod(self, mod_name: str, priority: int, pak_dst: str) -> None:
         """Enable a mod by copying its pak files to the destination."""
-        # Create priority-based folder name
+        # First, ensure any old versions of this mod's folder are removed to guarantee a clean install.
+        self._remove_mod_folders(pak_dst, mod_name)
+        
         priority_prefix = str(priority).zfill(3)
         target_folder = f"{priority_prefix}.{mod_name}"
         target_path = os.path.join(pak_dst, target_folder)
 
-        # Clean target directory if it exists
+        # Failsafe: Clean target directory if it exists to prevent orphaned files
+        # from previous versions or failed cleanups.
         if os.path.exists(target_path):
             shutil.rmtree(target_path)
 
@@ -162,10 +165,6 @@ class PakBatchProcessor:
         source_path = os.path.join(self.cfg["mods_folder"], mod_name)
         self._copy_mod_files(source_path, target_path, mod_name)
 
-    def _disable_mod(self, mod_name: str, pak_dst: str) -> None:
-        """Disable a mod by removing its pak files."""
-        self._remove_mod_folders(pak_dst, mod_name)
-
     def _copy_mod_files(self, source_path: str, target_path: str, mod_name: str) -> None:
         """Copy mod files from source to target, respecting file-based configurations."""
         import Util # Local import to avoid circular dependency issues
@@ -174,15 +173,7 @@ class PakBatchProcessor:
 
         if file_config:
             # --- Logic for Configurable Mods ---
-            mod_configs = self.profile_data.get("mod_configurations", {}).get(mod_name, {})
-            for category, options in file_config.items():
-                selected_option_folder = mod_configs.get(category, next(iter(options.keys()), None))
-                if selected_option_folder:
-                    option_path = os.path.join(source_path, category, selected_option_folder)
-                    if os.path.isdir(option_path):
-                        shutil.copytree(option_path, target_path, dirs_exist_ok=True)
-            
-            # Copy any other files AND directories that are not part of the configuration.
+            # First, copy all base files/folders that are NOT part of the configuration structure.
             for item in os.listdir(source_path):
                 s_item = os.path.join(source_path, item)
                 # Ignore info.json and any directory that is a configuration category.
@@ -194,6 +185,15 @@ class PakBatchProcessor:
                     shutil.copytree(s_item, d_item, dirs_exist_ok=True)
                 elif os.path.isfile(s_item):
                     shutil.copy2(s_item, d_item)
+
+            # Second, copy files from the selected configuration options.
+            mod_configs = self.profile_data.get("mod_configurations", {}).get(mod_name, {})
+            for category, options in file_config.items():
+                selected_option_folder = mod_configs.get(category, next(iter(options.keys()), None))
+                if selected_option_folder:
+                    option_path = os.path.join(source_path, category, selected_option_folder)
+                    if os.path.isdir(option_path):
+                        shutil.copytree(option_path, target_path, dirs_exist_ok=True)
         else:
             # --- Logic for Simple/Non-Configurable Mods ---
             shutil.copytree(source_path, target_path, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
@@ -204,7 +204,7 @@ class PakBatchProcessor:
             return
 
         # Pattern matches folders that start with digits followed by the mod name
-        pattern = re.compile(rf"^\d+\.{re.escape(mod_name)}$")
+        pattern = re.compile(r"^\d+\." + re.escape(mod_name) + r"$")
         
         for item in os.listdir(pak_dst):
             if pattern.match(item):
@@ -212,46 +212,40 @@ class PakBatchProcessor:
                 if os.path.isdir(folder_path):
                     shutil.rmtree(folder_path, ignore_errors=True)
 
+    def _clean_all_managed_folders(self, pak_dst: str) -> None:
+        """
+        Removes all CrossPatch-managed mod folders from the game's mod directory.
+        This is the primary cleanup mechanism.
+        """
+        self.signals.progress_text.emit("Cleaning game's mod directory...")
+        if not os.path.isdir(pak_dst):
+            return
+
+        managed_folder_pattern = re.compile(r"^\d{3,}\..+")
+        for item in os.listdir(pak_dst):
+            item_path = os.path.join(pak_dst, item)
+            if os.path.isdir(item_path) and managed_folder_pattern.match(item):
+                shutil.rmtree(item_path, ignore_errors=True)
+
     def _check_conflicts_for_mod(self, mod_name_to_check: str, all_mods_list: List[Dict]) -> Dict:
         """
         Checks a single mod for conflicts against all other enabled mods in the list.
         This is a simplified version of Util.check_mod_conflicts, adapted for the batch processor.
         """
-        import Util # Local import
+        import Util  # Local import
         conflicts = {}
         mods_folder = self.cfg["mods_folder"]
 
         # Get info for the mod we are checking
         mod_path_to_check = os.path.join(mods_folder, mod_name_to_check)
         mod_info_to_check = Util.read_mod_info(mod_path_to_check)
-        if not mod_info_to_check.get("pak_data"):
-            return {} # No data to check against
 
-        # Build a set of files provided by the mod being checked
-        this_mod_files = {}
+        # Get active paks for the mod being checked
         active_paks = Util.get_active_pak_files(mod_path_to_check, mod_info_to_check, self.profile_data)
-        for pak in mod_info_to_check.get("pak_data", {}).get("pak_files", []):
-            pak_path = pak.get("file_path", "")
-            pak_name = pak.get("file_name") or os.path.basename(pak_path)
-            if active_paks is not None and not any(pak_path.endswith(p) for p in active_paks):
-                continue
-            for file_path in pak.get("files", []):
-                this_mod_files[file_path] = pak_name
 
-        # Compare against other enabled mods in the batch
-        for other_mod_item in all_mods_list:
-            other_mod_name = other_mod_item["name"]
-            if other_mod_name == mod_name_to_check or not other_mod_item.get("enabled"):
-                continue
+        # Use the precise conflict check logic from Util
+        other_conflicts = Util.check_mod_conflicts(
+            mod_name_to_check, mod_info_to_check, self.cfg, self.profile_data, active_paks
+        )
 
-            # Use the same conflict check logic from Util
-            other_conflicts = Util.check_mod_conflicts(
-                mod_name_to_check, mod_info_to_check, self.cfg, self.profile_data, active_paks
-            )
-
-            if other_conflicts:
-                for file, providers in other_conflicts.items():
-                    # The result from check_mod_conflicts is already structured as (mod, pak) tuples
-                    conflicts.setdefault(file, set()).update(providers)
-
-        return conflicts
+        return other_conflicts

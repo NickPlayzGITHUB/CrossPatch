@@ -467,11 +467,9 @@ def list_mod_folders(path):
     if not os.path.isdir(path):
         return []
     try:
-        return sorted(
-            [d for d in os.listdir(path)
-             if os.path.isdir(os.path.join(path, d))],
-            key=str.lower
-        )
+        # Return the list unsorted to preserve the natural OS order.
+        # Sorting should be handled by the UI or specific logic that needs it.
+        return [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
     except Exception:
         return []
 
@@ -637,22 +635,7 @@ def get_game_mods_folder(cfg):
     )
 
 
-def clean_mods_folder(cfg):  # enhanced refresh
-    # Clean Pak mods folder
-    pak_dst = get_game_mods_folder(cfg)
-    if os.path.isdir(pak_dst):
-        # This regex matches folders that start with 3+ digits and a dot, e.g., "000.MyMod"
-        # This ensures we only delete folders managed by CrossPatch.
-        managed_folder_pattern = re.compile(r"^\d{3,}\..+")
-        for item in os.listdir(pak_dst):
-            item_path = os.path.join(pak_dst, item)
-            try:
-                if os.path.isdir(item_path) and managed_folder_pattern.search(item):
-                    shutil.rmtree(item_path)
-            except Exception as e:
-                print(f"Error removing directory {item} from pak mods: {e}")
-
-    # Clean UE4SS Logic mods folder
+def clean_ue4ss_folders(cfg):
     ue4ss_logic_dst = cfg.get("ue4ss_logic_mods_folder")
     if ue4ss_logic_dst and os.path.isdir(ue4ss_logic_dst):
         known_mods = list_mod_folders(cfg["mods_folder"])
@@ -684,6 +667,7 @@ def clean_mods_folder(cfg):  # enhanced refresh
                     print(f"Error disabling UE4SS mod {item}: {e}")
 
 def remove_mod_from_game_folders(mod_name, cfg):
+
     """
     Explicitly removes a single mod's installed files from both pak and UE4SS directories.
     This is used when a mod's type is changed to ensure no orphaned files are left.
@@ -821,8 +805,10 @@ def check_mod_conflicts(mod_name, mod_info, cfg, profile_data, active_paks=None)
     """
     conflicts = {}
     mods_folder = cfg["mods_folder"]
-    enabled_mods = [m for m in profile_data.get("mod_priority", [])
-                   if profile_data.get("enabled_mods", {}).get(m, False)]
+    # Get all enabled mods EXCEPT the one we are currently checking.
+    other_enabled_mods = [m for m in profile_data.get("mod_priority", [])
+                          if profile_data.get("enabled_mods", {}).get(m, False) and m != mod_name]
+
 
     # If this mod has no pak metadata, nothing to compare
     if not mod_info.get("pak_data"):
@@ -841,9 +827,7 @@ def check_mod_conflicts(mod_name, mod_info, cfg, profile_data, active_paks=None)
             this_mod_files[file_path] = pak_name
 
     # Compare against other enabled mods
-    for other in enabled_mods:
-        if other == mod_name:
-            continue
+    for other in other_enabled_mods:
         other_path = os.path.join(mods_folder, other)
         other_info = read_mod_info(other_path)
         if not other_info.get("pak_data"):
@@ -859,11 +843,11 @@ def check_mod_conflicts(mod_name, mod_info, cfg, profile_data, active_paks=None)
             for fp in pak.get("files", []):
                 if fp in this_mod_files:
                     # If the user previously chose to ignore conflicts between these two mods,
-                    # skip reporting this pair.
+                    # skip reporting this pair. This check is now more precise.
                     if is_conflict_ignored(mod_name, other):
                         continue
 
-                    # Record structured provider info: (provider_mod, pak_name)
+                    # Record structured provider info: (provider_mod, other_pak_name)
                     conflicts.setdefault(fp, [])
                     provider_tuple = (other, other_pak_name)
                     this_tuple = (mod_name, this_mod_files[fp])
@@ -1080,20 +1064,21 @@ def enable_mods_from_priority(priority_list, enabled_mods_dict, cfg, root_window
     
     # First pass: Handle non-pak mods immediately and build list of pak mods for batching
     for mod_name in priority_list:
-        if enabled_mods_dict.get(mod_name, False):
-            mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
-            mod_type = mod_info.get("mod_type", "pak")
-            
-            if mod_type == "pak":
-                pak_mods_to_process.append({
-                    "name": mod_name,
-                    "enabled": True,
-                    "priority": enabled_pak_mod_count
-                })
+        is_enabled = enabled_mods_dict.get(mod_name, False)
+        mod_info = read_mod_info(os.path.join(cfg["mods_folder"], mod_name))
+        mod_type = mod_info.get("mod_type", "pak")
+
+        if mod_type == "pak":
+            pak_mods_to_process.append({
+                "name": mod_name,
+                "enabled": is_enabled,
+                "priority": enabled_pak_mod_count if is_enabled else 0
+            })
+            if is_enabled:
                 enabled_pak_mod_count += 1
-            else:
-                # Handle non-pak mods directly as they are quick and don't need batching
-                enable_mod_with_ui_pyside(mod_name, cfg, 0, root_window, profile_data)
+        elif is_enabled:
+            # Handle non-pak mods directly as they are quick and don't need batching
+            enable_mod_with_ui_pyside(mod_name, cfg, 0, root_window, profile_data)
 
     # Initialize batch processor and process pak mods
     if pak_mods_to_process:

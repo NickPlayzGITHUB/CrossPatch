@@ -81,8 +81,8 @@ class ConflictDialog(QDialog):
     def _populate_summary_list(self):
         """Fills the summary list with pairs of conflicting mods."""
         mod_pairs = set()
-        for providers in self.conflicts.values():
-            mod_names = sorted([p[0] for p in providers])
+        for providers in self.conflicts.values(): # providers is a list of (mod_name, pak_name) tuples
+            mod_names = sorted(list(set(p[0] for p in providers))) # Extract unique mod names
             for i in range(len(mod_names)):
                 for j in range(i + 1, len(mod_names)):
                     mod_pairs.add(tuple(sorted((mod_names[i], mod_names[j]))))
@@ -91,10 +91,14 @@ class ConflictDialog(QDialog):
             self.conflicting_mods_list.addTopLevelItem(QTreeWidgetItem(["No conflicts found."]))
             return
 
+        print("\n--- Mod Conflict Summary ---")
         for mod1, mod2 in sorted(list(mod_pairs)):
-            item = QTreeWidgetItem([f"'{mod1}' ⇄ '{mod2}'"])
+            conflict_string = f"'{mod1}' ⇄ '{mod2}'"
+            print(conflict_string)
+            item = QTreeWidgetItem([conflict_string])
             item.setData(0, Qt.UserRole, (mod1, mod2)) # Store the pair
             self.conflicting_mods_list.addTopLevelItem(item)
+        print("--------------------------\n")
 
     def _populate_details_tree(self):
         """Fills the collapsible details tree with specific file conflicts."""

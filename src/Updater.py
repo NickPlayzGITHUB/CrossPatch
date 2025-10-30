@@ -50,6 +50,7 @@ class Updater:
         self.remote_version_info = remote_version_info
         self.temp_dir = os.path.join(os.path.dirname(sys.executable) if is_packaged() else os.path.dirname(__file__), 'update_temp')
         self.signals = UpdaterSignals()
+        self._dialog_ready = threading.Event()
         self.progress_dialog = None
 
         self.signals.finished.connect(self._on_finish)
@@ -65,6 +66,7 @@ class Updater:
         self.signals.progress.connect(self.progress_dialog.update_progress)
         self.signals.label_text.connect(self.progress_dialog.update_label)
         self.progress_dialog.show()
+        self._dialog_ready.set() # Signal that the dialog is ready
 
     def _on_finish(self):
         if self.progress_dialog:
@@ -81,6 +83,10 @@ class Updater:
         try:
             # Request the main thread to create the dialog
             self.signals.request_progress_dialog.emit()
+
+            # Wait for the dialog to be created on the main thread
+            if not self._dialog_ready.wait(timeout=5):
+                raise TimeoutError("Progress dialog did not become ready in time.")
 
             self.signals.label_text.emit("Finding release asset...")
             asset = self._find_release_asset()

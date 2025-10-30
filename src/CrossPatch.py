@@ -784,12 +784,12 @@ class CrossPatchWindow(QMainWindow):
         Performs the non-UI, long-running parts of mod processing in a background thread.
         Returns data needed for subsequent UI updates.
         """
-        all_mods = Util.list_mod_folders(self.cfg["mods_folder"])
-        new_priority_list = Util.synchronize_priority_with_disk(current_priority_from_main_thread, all_mods)
+        all_mods_on_disk = Util.list_mod_folders(self.cfg["mods_folder"])
+        new_priority_list = Util.synchronize_priority_with_disk(current_priority_from_main_thread, all_mods_on_disk)
         self.profile_manager.set_mod_priority(new_priority_list) # This is a backend operation, safe in background
 
-        Util.clean_mods_folder(self.cfg)
-        
+        # UE4SS mods are handled separately as they don't use the batch processor.
+        Util.clean_ue4ss_folders(self.cfg)
         conflicts = self.detect_mod_conflicts()
         return new_priority_list, conflicts
 
@@ -802,7 +802,7 @@ class CrossPatchWindow(QMainWindow):
         self.status_label.setText("Refreshing mods...")
 
         # Capture current_priority on the main thread before starting the worker
-        current_priority = [self.tree.topLevelItem(i).data(0, Qt.UserRole) for i in range(self.tree.topLevelItemCount())]
+        current_priority = self.profile_manager.get_active_profile().get("mod_priority", [])
 
         # Start background worker for the non-UI parts of refresh
         threading.Thread(target=self._refresh_worker, args=(current_priority,), daemon=True).start()
@@ -870,10 +870,8 @@ class CrossPatchWindow(QMainWindow):
                 else:
                     disabled_mods_with_info.append((name, mod_folder_name))
 
-            # Only sort disabled mods alphabetically if this is a save operation
-            if not preserve_selection:  # preserve_selection is False during save operations
-                disabled_mods_with_info.sort(key=lambda x: x[0].lower())
-            
+            # Always sort disabled mods alphabetically for consistent display
+            disabled_mods_with_info.sort(key=lambda x: x[0].lower())
             # The final list of mod folders to display
             display_order = enabled_mods_ordered + [mod_folder for name, mod_folder in disabled_mods_with_info]
             
@@ -935,9 +933,8 @@ class CrossPatchWindow(QMainWindow):
             self.tree.blockSignals(False)
 
     def save_and_refresh(self):
-        # Update treeview with sorting (preserve_selection=False to trigger sorting)
-        self._update_treeview(preserve_selection=False)
         self.refresh()
+        self._update_treeview(preserve_selection=False)
 
     def save_and_launch(self):
         """
@@ -996,8 +993,8 @@ class CrossPatchWindow(QMainWindow):
 
             # This is the final step after all background work is done.
             # This will handle enabling all mods, including showing the batch processor dialog.
-            enabled_mods = self.profile_manager.get_active_profile().get("enabled_mods", {})
-            Util.enable_mods_from_priority(new_priority_list, enabled_mods, self.cfg, self, self.profile_manager.get_active_profile())
+            enabled_mods_dict = self.profile_manager.get_active_profile().get("enabled_mods", {})
+            Util.enable_mods_from_priority(new_priority_list, enabled_mods_dict, self.cfg, self, self.profile_manager.get_active_profile())
             
             # Refresh the treeview one last time in case the conflict dialog caused changes.
             self._update_treeview(preserve_selection=False)
@@ -1250,8 +1247,10 @@ class CrossPatchWindow(QMainWindow):
 
         if reply == QMessageBox.Yes:
             print(f"Deleting mod {mod_id}")
+            mod_path = os.path.join(self.cfg["mods_folder"], mod_id)
             Util.remove_mod_from_game_folders(mod_id, self.cfg)
-            shutil.rmtree(os.path.join(self.cfg["mods_folder"], mod_id))
+            if os.path.exists(mod_path):
+                shutil.rmtree(mod_path)
             self.refresh()
 
     def open_selected_mod_folder(self):
@@ -1259,7 +1258,11 @@ class CrossPatchWindow(QMainWindow):
         if not selected: return
 
         folder = os.path.join(self.cfg["mods_folder"], selected.data(0, Qt.UserRole))
-        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        if os.path.isdir(folder):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        else:
+            QMessageBox.warning(self, "Folder Not Found",
+                                f"The folder for this mod could not be found at the expected location:\n\n{folder}")
 
     def detect_mod_conflicts(self):
         mods_folder = self.cfg["mods_folder"]
