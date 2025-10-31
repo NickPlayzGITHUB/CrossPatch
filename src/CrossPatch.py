@@ -953,8 +953,19 @@ class CrossPatchWindow(QMainWindow):
             self.tree.blockSignals(False)
 
     def save_and_refresh(self):
-        self.refresh()
-        self._update_treeview(preserve_selection=False)
+        """
+        Saves changes and refreshes the mod list. This is similar to save_and_launch
+        but does not start the game.
+        """
+        self.launch_btn.setEnabled(False)
+        self.status_label.setText("Applying mods...")
+
+        # Capture current_priority from the UI thread before starting the worker.
+        # This ensures we save the user's latest drag-and-drop changes.
+        current_priority = [self.tree.topLevelItem(i).data(0, Qt.UserRole) for i in range(self.tree.topLevelItemCount())]
+
+        # Start the same background worker as launch, but tell it not to launch the game.
+        threading.Thread(target=self._save_and_launch_worker, args=(current_priority, False), daemon=True).start()
 
     def save_and_launch(self):
         """
@@ -969,13 +980,13 @@ class CrossPatchWindow(QMainWindow):
         current_priority = [self.tree.topLevelItem(i).data(0, Qt.UserRole) for i in range(self.tree.topLevelItemCount())]
 
         # Start background worker for mod processing and game launch
-        threading.Thread(target=self._save_and_launch_worker, args=(current_priority,), daemon=True).start()
+        threading.Thread(target=self._save_and_launch_worker, args=(current_priority, True), daemon=True).start()
 
-    def _save_and_launch_worker(self, current_priority_from_main_thread):
+    def _save_and_launch_worker(self, current_priority_from_main_thread, should_launch_game):
         """Worker for save_and_launch, performs background tasks and launches game."""
         try:
             new_priority_list, conflicts = self._perform_mod_processing_background_task(current_priority_from_main_thread)
-            launch_success = Util.launch_game()
+            launch_success = Util.launch_game() if should_launch_game else True
             # Emit signal to main thread for UI updates
             self.mod_processing_finished.emit(new_priority_list, conflicts, launch_success, True)
         except Exception as e:
@@ -1010,7 +1021,7 @@ class CrossPatchWindow(QMainWindow):
             self.launch_btn.setEnabled(True)
             self.status_label.setText(f"CrossPatch {APP_VERSION}")
             print("Mod processing and UI update finished.")
-
+            
             # This is the final step after all background work is done.
             # This will handle enabling all mods, including showing the batch processor dialog.
             enabled_mods_dict = self.profile_manager.get_active_profile().get("enabled_mods", {})
@@ -1018,6 +1029,7 @@ class CrossPatchWindow(QMainWindow):
             
             # Refresh the treeview one last time in case the conflict dialog caused changes.
             self._update_treeview(preserve_selection=False)
+
     def add_mod_from_url(self, item_data=None):
         if not item_data:
             url, ok = QInputDialog.getText(self, "Add Mod from URL", "Enter the GameBanana Mod URL:")

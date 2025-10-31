@@ -651,18 +651,19 @@ def clean_ue4ss_folders(cfg):
     ue4ss_dst = cfg.get("ue4ss_mods_folder")
     if ue4ss_dst and os.path.isdir(ue4ss_dst):
         # Get a list of all known mod folder names from the source mods folder
-        known_mods = list_mod_folders(cfg["mods_folder"])
+        known_mod_folders = list_mod_folders(cfg["mods_folder"])
         for item in os.listdir(ue4ss_dst):
             # Only remove folders that are recognized as mods managed by CrossPatch
-            if item in known_mods:
+            if item in known_mod_folders:
                 item_path = os.path.join(ue4ss_dst, item)
                 try:
                     # Check if it's a UE4SS mod before removing
                     mod_info = read_mod_info(os.path.join(cfg["mods_folder"], item))
-                    if mod_info.get("mod_type") == "ue4ss-script" and os.path.isdir(item_path):
+                    if mod_info.get("mod_type") == "ue4ss-script":
                         # For UE4SS script mods, we must remove the entire folder to ensure
                         # a clean re-installation on refresh, preventing orphaned files.
-                        shutil.rmtree(item_path)
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path)
                 except Exception as e:
                     print(f"Error disabling UE4SS mod {item}: {e}")
 
@@ -877,20 +878,19 @@ def enable_mod(mod_name, cfg, priority, profile_data):
     src = mod_path
     if mod_type == "ue4ss-script":
         dst = os.path.join(cfg["ue4ss_mods_folder"], mod_name)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        # For UE4SS Script mods, copy files and create 'enabled.txt'
-        shutil.copytree(src, dst, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
+        os.makedirs(dst, exist_ok=True)
+        # For UE4SS Script mods, copy all files and create 'enabled.txt'
+        shutil.copytree(src, dst, dirs_exist_ok=True)
         with open(os.path.join(dst, "enabled.txt"), "w") as f:
             f.write("") # The file just needs to exist.
     elif mod_type == "ue4ss-logic":
         dst = os.path.join(cfg["ue4ss_logic_mods_folder"], mod_name)
-        os.makedirs(dst, exist_ok=True)
-        # For Logic mods, copy the contents directly. They are removed entirely on disable.
-        shutil.copytree(src, dst, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        # For Logic mods, copy all contents directly. They are removed entirely on disable.
+        shutil.copytree(src, dst, dirs_exist_ok=True)
     else: # Default to pak mod behavior
         # Pak mod installation is handled by PakBatchProcessor. This function only handles non-pak mods.
         pass
-
 
     profile_data["enabled_mods"][mod_name] = True
 
@@ -905,6 +905,9 @@ def enable_mod_with_ui_pyside(mod_name, cfg, priority, root_window, profile_data
             # User cancelled or installation failed, so we abort enabling this mod.
             profile_data["enabled_mods"][mod_name] = False # Ensure it's marked as disabled
             return
+    
+    # This was the missing piece: actually call the function that copies the files.
+    enable_mod(mod_name, cfg, priority, profile_data)
 
     # For pak mods, if we don't have pak_data yet, start a non-blocking background
     # parse that will persist pak_data and run conflict detection when complete.
