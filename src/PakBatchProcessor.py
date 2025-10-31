@@ -175,6 +175,17 @@ class PakBatchProcessor:
         # Copy pak files from mod to target
         self._copy_mod_files(source_path, target_path, mod_name)
 
+    def _get_p_suffixed_path(self, file_path: str) -> str:
+        """
+        Adds a '_P' suffix to the filename if it's a pak, utoc, or ucas file.
+        Example: 'MyMod.pak' -> 'MyMod_P.pak'
+        """
+        name, ext = os.path.splitext(file_path)
+        if ext.lower() in ['.pak', '.ucas', '.utoc']:
+            return f"{name}_P{ext}"
+        return file_path
+
+
     def _copy_mod_files(self, source_path: str, target_path: str, mod_name: str) -> None:
         """Copy mod files from source to target, respecting file-based configurations."""
         import Util # Local import to avoid circular dependency issues
@@ -190,7 +201,7 @@ class PakBatchProcessor:
                 if item.lower() == "info.json" or item in file_config:
                     continue
                 
-                d_item = os.path.join(target_path, item)
+                d_item = os.path.join(target_path, self._get_p_suffixed_path(item))
                 if os.path.isdir(s_item):
                     shutil.copytree(s_item, d_item, dirs_exist_ok=True)
                 elif os.path.isfile(s_item):
@@ -203,10 +214,17 @@ class PakBatchProcessor:
                 if selected_option_folder:
                     option_path = os.path.join(source_path, category, selected_option_folder)
                     if os.path.isdir(option_path):
-                        shutil.copytree(option_path, target_path, dirs_exist_ok=True)
+                        # We need to copy files individually to rename them
+                        for root, _, files in os.walk(option_path):
+                            for file in files:
+                                src_file = os.path.join(root, file)
+                                dst_file = os.path.join(target_path, self._get_p_suffixed_path(file))
+                                shutil.copy2(src_file, dst_file)
         else:
             # --- Logic for Simple/Non-Configurable Mods ---
-            shutil.copytree(source_path, target_path, ignore=shutil.ignore_patterns('info.json'), dirs_exist_ok=True)
+            for item in os.listdir(source_path):
+                if item.lower() != 'info.json':
+                    shutil.copy2(os.path.join(source_path, item), os.path.join(target_path, self._get_p_suffixed_path(item)))
 
     def _remove_mod_folders(self, pak_dst: str, mod_name: str) -> None:
         """Remove all priority folders for a given mod."""
