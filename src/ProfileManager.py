@@ -101,8 +101,7 @@ class ProfileManager:
 
     def set_mod_enabled(self, mod_id, is_enabled):
         """Sets the enabled state for a mod in the active profile."""
-        self.get_active_profile()["enabled_mods"][mod_id] = is_enabled
-        self.save()
+        self.get_active_profile().setdefault("enabled_mods", {})[mod_id] = is_enabled
 
     def set_mod_configuration(self, mod_name, selections):
         """

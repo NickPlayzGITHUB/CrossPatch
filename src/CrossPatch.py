@@ -540,12 +540,14 @@ class CrossPatchWindow(QMainWindow):
 
         self.refresh_btn = QPushButton(self.style().standardIcon(QStyle.SP_BrowserReload), " Refresh")
         self.refresh_btn.setToolTip("Apply changes and refresh list")
+        self.refresh_btn.setToolTip("Refresh the mod list from disk")
         self.refresh_btn.clicked.connect(self.refresh)
+        # bottom_button_layout.addWidget(self.refresh_btn) # Replaced by save_btn
         bottom_button_layout.addWidget(self.refresh_btn)
 
         self.save_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogSaveButton), " Save")
         self.save_btn.setToolTip("Save changes (mod order and enabled status)")
-        self.save_btn.clicked.connect(self.save_and_refresh)
+        self.save_btn.clicked.connect(self.save_and_apply_mods)
         bottom_button_layout.addWidget(self.save_btn)
 
 
@@ -565,7 +567,7 @@ class CrossPatchWindow(QMainWindow):
         # --- Launch Button ---
         launch_btn = QPushButton("Launch Game")
         launch_btn.setToolTip("Apply changes and launch the game")
-        launch_btn.clicked.connect(self.save_and_launch)
+        launch_btn.clicked.connect(self.launch_game_only)
         font = launch_btn.font()
         font.setPointSize(12)
         launch_btn.setFont(font)
@@ -617,6 +619,7 @@ class CrossPatchWindow(QMainWindow):
         tab_text = self.notebook.tabText(index)
         is_mods_tab = (tab_text == "Installed Mods")
         
+        # self.refresh_btn.setVisible(is_mods_tab)
         self.refresh_btn.setVisible(is_mods_tab)
         self.save_btn.setVisible(is_mods_tab)
         self.search_btn.setVisible(is_mods_tab)
@@ -670,8 +673,12 @@ class CrossPatchWindow(QMainWindow):
 
             mod_folder_name = item.data(0, Qt.UserRole)
             is_enabled = item.checkState(1) == Qt.Checked
-            self.profile_manager.set_mod_enabled(mod_folder_name, is_enabled)
-            # Do not re-sort the list when checking/unchecking - this will happen on save instead
+            
+            # We no longer save the state immediately. Instead, we just update the
+            # in-memory profile data. The change will be persisted only when the
+            # user clicks "Save".
+            active_profile = self.profile_manager.get_active_profile()
+            active_profile.setdefault("enabled_mods", {})[mod_folder_name] = is_enabled
 
     def on_right_click(self, pos):
         """Handles right-clicks on the treeview to show the context menu."""
@@ -814,29 +821,12 @@ class CrossPatchWindow(QMainWindow):
         return new_priority_list, conflicts
 
     def refresh(self):
-        """
-        Initiates a refresh operation. The long-running parts are offloaded to a background thread.
-        UI updates are handled by _on_mod_processing_finished.
-        """
-        self.launch_btn.setEnabled(False) # Disable UI during refresh
-        self.status_label.setText("Refreshing mods...")
-
-        # Capture current_priority on the main thread before starting the worker
-        current_priority = self.profile_manager.get_active_profile().get("mod_priority", [])
-
-        # Start background worker for the non-UI parts of refresh
-        threading.Thread(target=self._refresh_worker, args=(current_priority,), daemon=True).start()
-
-    def _refresh_worker(self, current_priority_from_main_thread):
-        """Worker for the refresh button, performs background tasks."""
-        try:
-            new_priority_list, conflicts = self._perform_mod_processing_background_task(current_priority_from_main_thread)
-            # Emit signal to main thread for UI updates
-            self.mod_processing_finished.emit(new_priority_list, conflicts, True, False) # launch_success=True, is_launch_operation=False
-        except Exception as e:
-            print(f"Error during refresh worker: {e}")
-            QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Error", f"An error occurred during refresh: {e}"))
-            QTimer.singleShot(0, lambda: (self.launch_btn.setEnabled(True), self.status_label.setText(f"CrossPatch {APP_VERSION}")))
+        """Simply refreshes the mod list UI without saving or applying changes."""
+        # Reload the configuration from disk to discard any unsaved in-memory changes
+        # (like pending checkbox ticks). This ensures the refresh shows the true saved state.
+        self.cfg = Config.load_config()
+        self.profile_manager = ProfileManager(self.cfg)
+        self._update_treeview(preserve_selection=True)
 
     def _tree_mouse_press_event(self, event):
         """Clears selection when clicking on an empty area of the tree."""
@@ -952,7 +942,7 @@ class CrossPatchWindow(QMainWindow):
         finally:
             self.tree.blockSignals(False)
 
-    def save_and_refresh(self):
+    def save_and_apply_mods(self):
         """
         Saves changes and refreshes the mod list. This is similar to save_and_launch
         but does not start the game.
@@ -964,23 +954,18 @@ class CrossPatchWindow(QMainWindow):
         # This ensures we save the user's latest drag-and-drop changes.
         current_priority = [self.tree.topLevelItem(i).data(0, Qt.UserRole) for i in range(self.tree.topLevelItemCount())]
 
+        # Before starting the worker, explicitly save the profile data which now
+        # contains any pending checkbox changes.
+        print("Saving profile data before applying mods...")
+        self.profile_manager.save()
+
         # Start the same background worker as launch, but tell it not to launch the game.
         threading.Thread(target=self._save_and_launch_worker, args=(current_priority, False), daemon=True).start()
 
-    def save_and_launch(self):
-        """
-        Saves changes and launches the game.
-        The long-running parts are offloaded to a background thread.
-        UI updates are handled by _on_mod_processing_finished.
-        """
-        self.launch_btn.setEnabled(False)
-        self.status_label.setText("Applying mods and launching...")
-        
-        # Capture current_priority on the main thread before starting the worker
-        current_priority = [self.tree.topLevelItem(i).data(0, Qt.UserRole) for i in range(self.tree.topLevelItemCount())]
-
-        # Start background worker for mod processing and game launch
-        threading.Thread(target=self._save_and_launch_worker, args=(current_priority, True), daemon=True).start()
+    def launch_game_only(self):
+        """Directly launches the game without saving or applying any changes."""
+        if not Util.launch_game():
+            QMessageBox.warning(self, "Launch Failed", "Could not issue the command to launch the game.")
 
     def _save_and_launch_worker(self, current_priority_from_main_thread, should_launch_game):
         """Worker for save_and_launch, performs background tasks and launches game."""
@@ -1062,7 +1047,7 @@ class CrossPatchWindow(QMainWindow):
         try:
             mod_name = item_data.get('_sName', 'Unknown Mod')
             if not item_data.get('_aFiles'):
-                QMessageBox.critical(self, "No Files Found", "Could not find any downloadable files for this mod.")
+                QMessageBox.information(self, "No Files Found", "Could not find any downloadable files for this mod.")
                 return
             
             # Pause background image loading while the modal dialog is open to prevent crashes.
@@ -1161,7 +1146,7 @@ class CrossPatchWindow(QMainWindow):
             mod_name_from_gb = item_data.get('_sName', 'Unknown Mod')
 
             if not item_data.get('_aFiles'):
-                QMessageBox.critical(self, "No Files Found", "Could not find any downloadable files for this mod.")
+                QMessageBox.information(self, "No Files Found", "Could not find any downloadable files for this mod.")
                 return
 
             dialog = FileSelectDialog(self, item_data)
@@ -1283,7 +1268,7 @@ class CrossPatchWindow(QMainWindow):
             Util.remove_mod_from_game_folders(mod_id, self.cfg)
             if os.path.exists(mod_path):
                 shutil.rmtree(mod_path)
-            self.refresh()
+            self.save_and_apply_mods() # Use save_and_apply to ensure changes are persisted and applied
 
     def open_selected_mod_folder(self):
         selected = self.tree.currentItem()
@@ -1400,7 +1385,7 @@ class CrossPatchWindow(QMainWindow):
             self.mods_folder_var.setText(new_folder)
             self.cfg["mods_folder"] = new_folder
             Config.save_config(self.cfg)
-            self.refresh()
+            self.save_and_apply_mods()
 
     def on_change_game_root(self):
         new_root = QFileDialog.getExistingDirectory(self, "Select Crossworlds Install Folder", self.cfg["game_root"])
@@ -1423,7 +1408,7 @@ class CrossPatchWindow(QMainWindow):
     def on_profile_change(self):
         new_profile = self.profile_selector.currentText()
         if self.profile_manager.set_active_profile(new_profile):
-            self.refresh()
+            self.save_and_apply_mods()
 
     def add_profile(self):
         new_name, ok = QInputDialog.getText(self, "New Profile", "Enter a name for the new profile:")
@@ -1463,7 +1448,7 @@ class CrossPatchWindow(QMainWindow):
         if reply == QMessageBox.Yes:
             if self.profile_manager.delete_profile(profile_to_delete):
                 self.update_profile_selector()
-                self.refresh()
+                self.save_and_apply_mods()
 
     # --- Browse Mods Tab Methods ---
 
