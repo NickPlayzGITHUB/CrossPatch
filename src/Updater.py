@@ -20,7 +20,7 @@ class UpdaterSignals(QObject):
     label_text = Signal(str)
     finished = Signal()
     error = Signal(str)
-    request_progress_dialog = Signal()
+    request_download = Signal(str, str) # url, file_path
 
 class ProgressDialog(QDialog):
     """A simple dialog to show update progress."""
@@ -50,23 +50,23 @@ class Updater:
         self.remote_version_info = remote_version_info
         self.temp_dir = os.path.join(os.path.dirname(sys.executable) if is_packaged() else os.path.dirname(__file__), 'update_temp')
         self.signals = UpdaterSignals()
-        self._dialog_ready = threading.Event()
         self.progress_dialog = None
 
         self.signals.finished.connect(self._on_finish)
         self.signals.error.connect(self._on_error)
-        self.signals.request_progress_dialog.connect(self._start_progress_dialog)
+        self.signals.request_download.connect(self._start_download)
 
     def start_update(self):
         """Starts the update process in a new thread."""
-        threading.Thread(target=self._update_thread, daemon=True).start()
-
-    def _start_progress_dialog(self):
+        # Show the dialog immediately and start a thread to find the asset URL.
         self.progress_dialog = ProgressDialog(self.parent, "Updating CrossPatch...")
         self.signals.progress.connect(self.progress_dialog.update_progress)
         self.signals.label_text.connect(self.progress_dialog.update_label)
-        self.progress_dialog.show()
-        self._dialog_ready.set() # Signal that the dialog is ready
+        threading.Thread(target=self._find_asset_and_request_download, daemon=True).start()
+        self.progress_dialog.exec()
+
+    def _start_download(self, url, file_path):
+        threading.Thread(target=self._download_and_install_thread, args=(url, file_path), daemon=True).start()
 
     def _on_finish(self):
         if self.progress_dialog:
@@ -79,27 +79,25 @@ class Updater:
         QMessageBox.critical(self.parent, "Update Failed", f"An error occurred during the update process:\n\n{error_message}")
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def _update_thread(self):
+    def _find_asset_and_request_download(self):
         try:
-            # Request the main thread to create the dialog
-            self.signals.request_progress_dialog.emit()
-
-            # Wait for the dialog to be created on the main thread
-            if not self._dialog_ready.wait(timeout=5):
-                raise TimeoutError("Progress dialog did not become ready in time.")
-
             self.signals.label_text.emit("Finding release asset...")
             asset = self._find_release_asset()
             if not asset:
                 raise ValueError("Could not find a suitable release package for this OS.")
 
             download_url = asset['browser_download_url']
-            file_name = asset['name']
-            archive_path = os.path.join(self.temp_dir, file_name)
+            archive_path = os.path.join(self.temp_dir, asset['name'])
             os.makedirs(self.temp_dir, exist_ok=True)
 
-            self.signals.label_text.emit(f"Downloading {file_name}...")
-            self._download_file_with_progress(download_url, archive_path)
+            self.signals.request_download.emit(download_url, archive_path)
+        except Exception as e:
+            self.signals.error.emit(str(e))
+
+    def _download_and_install_thread(self, url, archive_path):
+        try:
+            self.signals.label_text.emit(f"Downloading {os.path.basename(archive_path)}...")
+            self._download_file_with_progress(url, archive_path)
 
             extract_path = os.path.join(self.temp_dir, 'extracted')
             self._extract_archive(archive_path, extract_path, self.signals.label_text)
@@ -127,9 +125,6 @@ class Updater:
         return None
 
     def _download_file_with_progress(self, url, destination_path):
-        # Wait for the progress dialog to be created by the main thread
-        while not self.progress_dialog:
-            threading.sleep(0.05)
         with requests.get(url, stream=True, headers={'User-Agent': f'CrossPatch-Updater/{APP_VERSION}'}) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))
@@ -150,18 +145,21 @@ class Updater:
 
         if platform.system() == "Windows":
             script_path = os.path.join(self.temp_dir, 'updater.bat')
+            # Ensure all paths are double-quoted to handle spaces correctly.
+            quoted_source_path = f'"{source_path}"'
+            quoted_app_path = f'"{app_path}"'
+            quoted_temp_dir = f'"{self.temp_dir}"'
             script_content = f"""
 @echo off & title CrossPatch Updater
 echo Waiting for CrossPatch (PID: {pid}) to close...
 taskkill /F /PID {pid} > nul 2>&1
 timeout /t 1 /nobreak > nul
 echo.
-echo Updating files...
-xcopy "{source_path}" "{app_path}" /E /Y /I /Q
+echo Updating files from {quoted_source_path} to {quoted_app_path}...
+xcopy {quoted_source_path} {quoted_app_path} /E /Y /I /Q
 echo.
-echo Update successful! Press any key to exit.
-echo.
-pause > nul & start /b "" cmd /c "timeout /t 1 /nobreak > nul && rmdir /s /q "{self.temp_dir}"" & exit
+echo Update successful! Cleaning up and exiting...
+start /b "" cmd /c "timeout /t 1 /nobreak > nul && rmdir /s /q {quoted_temp_dir}" & exit
 """
             with open(script_path, 'w') as f:
                 f.write(script_content)
