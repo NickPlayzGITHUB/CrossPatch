@@ -222,9 +222,16 @@ class PakBatchProcessor:
                                 shutil.copy2(src_file, dst_file)
         else:
             # --- Logic for Simple/Non-Configurable Mods ---
+            # Copy all files and subdirectories, except for info.json.
             for item in os.listdir(source_path):
-                if item.lower() != 'info.json':
-                    shutil.copy2(os.path.join(source_path, item), os.path.join(target_path, self._get_p_suffixed_path(item)))
+                if item.lower() == 'info.json':
+                    continue
+                s_item = os.path.join(source_path, item)
+                d_item = os.path.join(target_path, self._get_p_suffixed_path(item))
+                if os.path.isdir(s_item):
+                    shutil.copytree(s_item, d_item, dirs_exist_ok=True)
+                elif os.path.isfile(s_item):
+                    shutil.copy2(s_item, d_item)
 
     def _remove_mod_folders(self, pak_dst: str, mod_name: str) -> None:
         """Remove all priority folders for a given mod."""
