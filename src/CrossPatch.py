@@ -821,12 +821,25 @@ class CrossPatchWindow(QMainWindow):
         return new_priority_list, conflicts
 
     def refresh(self):
-        """Simply refreshes the mod list UI without saving or applying changes."""
-        # Reload the configuration from disk to discard any unsaved in-memory changes
-        # (like pending checkbox ticks). This ensures the refresh shows the true saved state.
-        self.cfg = Config.load_config()
-        self.profile_manager = ProfileManager(self.cfg)
-        self._update_treeview(preserve_selection=True)
+        """
+        Refreshes the mod list from disk. This will find new mods and remove deleted ones.
+        It performs a background sync and then updates the UI.
+        """
+        self.status_label.setText("Refreshing mod list...")
+        self.refresh_btn.setEnabled(False)
+
+        def refresh_worker():
+            try:
+                current_priority = self.profile_manager.get_active_profile().get("mod_priority", [])
+                new_priority_list, _ = self._perform_mod_processing_background_task(current_priority)
+                # Emit with dummy values for unused parameters
+                self.mod_processing_finished.emit(new_priority_list, {}, False, False)
+            except Exception as e:
+                print(f"Error during refresh worker: {e}")
+                # Re-enable button and reset status on the main thread
+                QTimer.singleShot(0, lambda: (self.refresh_btn.setEnabled(True), self.status_label.setText(f"CrossPatch {APP_VERSION}")))
+
+        threading.Thread(target=refresh_worker, daemon=True).start()
 
     def _tree_mouse_press_event(self, event):
         """Clears selection when clicking on an empty area of the tree."""
@@ -1004,9 +1017,13 @@ class CrossPatchWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"An error occurred during UI update: {e}")
         finally:
             self.launch_btn.setEnabled(True)
+            self.refresh_btn.setEnabled(True)
             self.status_label.setText(f"CrossPatch {APP_VERSION}")
             print("Mod processing and UI update finished.")
             
+            if not is_launch_operation: # Only do this if it's not a launch
+                return
+
             # This is the final step after all background work is done.
             # This will handle enabling all mods, including showing the batch processor dialog.
             enabled_mods_dict = self.profile_manager.get_active_profile().get("enabled_mods", {})
