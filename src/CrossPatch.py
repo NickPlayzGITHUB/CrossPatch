@@ -539,14 +539,14 @@ class CrossPatchWindow(QMainWindow):
         bottom_button_layout.setContentsMargins(0, 5, 0, 5)
 
         self.refresh_btn = QPushButton(self.style().standardIcon(QStyle.SP_BrowserReload), " Refresh")
-        self.refresh_btn.setToolTip("Apply changes and refresh list")
+        self.refresh_btn.setToolTip("Refresh mods list")
         self.refresh_btn.setToolTip("Refresh the mod list from disk")
         self.refresh_btn.clicked.connect(self.refresh)
         # bottom_button_layout.addWidget(self.refresh_btn) # Replaced by save_btn
         bottom_button_layout.addWidget(self.refresh_btn)
 
         self.save_btn = QPushButton(self.style().standardIcon(QStyle.SP_DialogSaveButton), " Save")
-        self.save_btn.setToolTip("Save changes (mod order and enabled status)")
+        self.save_btn.setToolTip("Save & apply mods")
         self.save_btn.clicked.connect(self.save_and_apply_mods)
         bottom_button_layout.addWidget(self.save_btn)
 
@@ -566,7 +566,7 @@ class CrossPatchWindow(QMainWindow):
 
         # --- Launch Button ---
         launch_btn = QPushButton("Launch Game")
-        launch_btn.setToolTip("Apply changes and launch the game")
+        launch_btn.setToolTip("Launches CrossWorlds")
         launch_btn.clicked.connect(self.launch_game_only)
         font = launch_btn.font()
         font.setPointSize(12)
