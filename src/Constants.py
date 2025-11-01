@@ -1,5 +1,5 @@
 APP_TITLE = "CrossPatch - A Crossworlds Mod Manager"
-APP_VERSION = "1.1.4"
+APP_VERSION = "1.1.5"
 CONFIG_FILE = "mod_manager_config.json"
 UPDATE_URL = "https://api.github.com/repos/NickPlayzGITHUB/CrossPatch/releases/latest"
 GB_API_URL = "https://gamebanana.com/apiv11/Mod/"
